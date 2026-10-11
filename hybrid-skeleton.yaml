@@ -124,8 +124,7 @@ coupling:
     - layer: GENS_
       label: Genset FH9000R — live machine, simulated in the GENS_ view
       source: state_machine
-      order: [GENS_READY, GENS_PRESTART, GENS_CRANKING, GENS_PAUSE, GENS_RUNNING,
-              GENS_STOPPING, GENS_FAULT]
+      order: [GENS_READY, GENS_CRANKING, GENS_PAUSE, GENS_RUNNING, GENS_STOPPING, GENS_FAULT]
   links:
     - from: GAZ_READY
       to: GENS_READY

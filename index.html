@@ -443,7 +443,7 @@ deye:
 # =====================================================================
 clock:
   warp: 240                # 1 s of simulation = 4 min of plant, while idle
-  realtime_states: [GENS_PRESTART, GENS_CRANKING, GENS_PAUSE, GENS_STOPPING, GENS_FAULT]
+  realtime_states: [GENS_CRANKING, GENS_PAUSE, GENS_STOPPING, GENS_FAULT]
   realtime_on_request: true   # also drop to 1x as soon as the request appears,
                               # so the request hold and the ready dwell are
                               # watchable. IN GENS_READY ONLY: the request stays
@@ -643,8 +643,7 @@ coupling:
     - layer: GENS_
       label: Genset FH9000R — live machine, simulated in the GENS_ view
       source: state_machine
-      order: [GENS_READY, GENS_PRESTART, GENS_CRANKING, GENS_PAUSE, GENS_RUNNING,
-              GENS_STOPPING, GENS_FAULT]
+      order: [GENS_READY, GENS_CRANKING, GENS_PAUSE, GENS_RUNNING, GENS_STOPPING, GENS_FAULT]
   links:
     - from: GAZ_READY
       to: GENS_READY
@@ -1433,16 +1432,9 @@ const I18N = {
       'states.GENS_READY.transitions.0.description':
         'Żądanie przytrzymane {t_request_hold} s i postój w gotowości {t_ready} s minął — zapłon',
 
-      'states.GENS_PRESTART.transitions.1.description': 'Wciśnięto przycisk gaszenia — zwarcie trzymane {t_kill} s niezależnie od długości naciśnięcia',
       'states.GENS_CRANKING.transitions.1.description': 'Wciśnięto przycisk gaszenia — zwarcie trzymane {t_kill} s niezależnie od długości naciśnięcia',
       'states.GENS_PAUSE.transitions.1.description': 'Wciśnięto przycisk gaszenia — zwarcie trzymane {t_kill} s niezależnie od długości naciśnięcia',
       'states.GENS_RUNNING.transitions.1.description': 'Wciśnięto przycisk gaszenia — zwarcie trzymane {t_kill} s niezależnie od długości naciśnięcia',
-      'states.GENS_PRESTART.description':
-        'Przekaźnik zapłonu wzbudzony, rozrusznik jeszcze rozwarty. Silnik się nie kręci: ta sekunda istnieje po to, żeby iskra była, zanim nastąpi pierwszy suw sprężania. Wyjście stąd nie wymaga gaszenia — nic nie pracuje, więc zapłon po prostu odpada.',
-      'states.GENS_PRESTART.transitions.0.description': 'Alarm CO przed kręceniem',
-      'states.GENS_PRESTART.transitions.2.description': 'Zanik sygnału z Deye przed załączeniem rozrusznika',
-      'states.GENS_PRESTART.transitions.3.description': 'Potwierdzenie pracy bez kręcenia — silnik już chodził',
-      'states.GENS_PRESTART.transitions.4.description': 'Zapłon czynny {t_prestart} s — załącz rozrusznik',
       'states.GENS_CRANKING.description':
         'Rozrusznik załączony. Limit czasu chroni bendiks.',
       'states.GENS_CRANKING.transitions.0.description': 'Alarm CO podczas rozruchu',
