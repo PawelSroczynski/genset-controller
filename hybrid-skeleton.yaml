@@ -6,7 +6,7 @@
 #  the split into layers, the sequences and the interlocks — for review and
 #  correction on paper, before the machines have signals.
 #
-#  TWO MACHINES, NOT ONE TABLE. The genset (AGR_, in state-machine.yaml) is
+#  TWO MACHINES, NOT ONE TABLE. The genset (GENS_, in state-machine.yaml) is
 #  untouched. Two parallel layers are added here, and the joint between them
 #  is a SINGLE SIGNAL each way, not shared transitions. Folding everything
 #  into one table would multiply out to 6 x 10 x 9 combinations and the table
@@ -27,7 +27,7 @@ name: Hybrid — pyrolysis retort and water-gas gasifier
 #  that is now the most important thing this model has to express.
 
 layers:
-  AGR_: genset FOGO FH9000R — separate machine, finished, in state-machine.yaml
+  GENS_: genset FOGO FH9000R — separate machine, finished, in state-machine.yaml
   RET_: reactor, carbonisation phase — wood to a charcoal bed, batch
   GAZ_: reactor, gasification phase — water gas from that same bed
 
@@ -35,12 +35,12 @@ layers:
 #  THE JOINT BETWEEN LAYERS — this is the whole integration
 # =====================================================================
 #
-#  GAZ_ -> AGR_   one signal: `gas_ready`
-#                 The AGR_READY exit condition widens from `gen_request`
+#  GAZ_ -> GENS_   one signal: `gas_ready`
+#                 The GENS_READY exit condition widens from `gen_request`
 #                 to `gen_request and gas_ready`.
 #                 THAT IS THE ONLY CHANGE TO THE GENSET MACHINE. Nothing else.
 #
-#  AGR_ -> GAZ_   one signal: `engine_drawing`  (AGR_ is in AGR_RUNNING)
+#  GENS_ -> GAZ_   one signal: `engine_drawing`  (GENS_ is in GENS_RUNNING)
 #                 The gasifier needs it: without the engine drawing, gas does
 #                 not flow, the reactor idles and the bed cools down.
 #
@@ -121,19 +121,19 @@ coupling:
       source: states_gas
       order: [GAZ_COLD, GAZ_LIGHTING, GAZ_WARMUP, GAZ_FLARE, GAZ_READY,
               GAZ_PURGE, GAZ_SUPPLYING, GAZ_SHUTDOWN, GAZ_COOLDOWN, GAZ_FAULT]
-    - layer: AGR_
-      label: Genset FH9000R — live machine, simulated in the AGR_ view
+    - layer: GENS_
+      label: Genset FH9000R — live machine, simulated in the GENS_ view
       source: state_machine
-      order: [AGR_READY, AGR_CRANKING, AGR_PAUSE, AGR_RUNNING, AGR_STOPPING, AGR_FAULT]
+      order: [GENS_READY, GENS_CRANKING, GENS_PAUSE, GENS_RUNNING, GENS_STOPPING, GENS_FAULT]
   links:
     - from: GAZ_READY
-      to: AGR_READY
+      to: GENS_READY
       signal: gas_ready
       kind: signal
       description: >-
-        Widens the AGR_READY exit condition from `gen_request` to
+        Widens the GENS_READY exit condition from `gen_request` to
         `gen_request and gas_ready`. THE ONLY CHANGE TO THE GENSET MACHINE.
-    - from: AGR_RUNNING
+    - from: GENS_RUNNING
       to: GAZ_PURGE
       signal: engine_drawing
       kind: signal
@@ -383,7 +383,7 @@ states_gas:
     y: 40
     description: >-
       THIS IS THE JOINT. The only state that raises the `gas_ready` signal read
-      by the AGR_ layer. The reactor makes gas to the flare and waits. The
+      by the GENS_ layer. The reactor makes gas to the flare and waits. The
       genset may start, or may not. The engine valve is still closed — it opens
       only after the purge, once the genset reports that it is drawing.
     outputs: { blower: true, steam_injection: true, flare_valve: true, engine_gas_valve: false }

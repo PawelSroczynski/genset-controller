@@ -62,7 +62,7 @@ The real chain is a feedback loop:
 
 ```
 cells -> BMS (SOC estimate) -> Deye (Start threshold) -> GS contact
-      -> IN-01 -> AGR_ -> genset -> GEN port -> charges the bank -> cells
+      -> IN-01 -> GENS_ -> genset -> GEN port -> charges the bank -> cells
 ```
 
 So the simulator now models the plant and the operator drives **physical
@@ -84,8 +84,8 @@ The state machine runs in real seconds. One clock cannot serve both.
 
 The plant clock runs at 240x while nothing is happening and drops to real time
 the moment the controller has something to show — cranking, the pause, stopping,
-a fault, and the request hold in `AGR_READY`. The multiplier is always on screen.
-The restriction to `AGR_READY` matters: the request stays asserted through the
+a fault, and the request hold in `GENS_READY`. The multiplier is always on screen.
+The restriction to `GENS_READY` matters: the request stays asserted through the
 whole charging run, and without it the clock sat at 1x for hours of charging.
 
 ## What the genset load factor is for
@@ -105,20 +105,20 @@ rather than an opinion.
 
 Configuration files are **English only** — one canonical source. The simulator
 carries a Polish translation keyed **by path into the YAML structure**
-(`states.AGR_READY.transitions.0.description`), not by text matching, so it
+(`states.GENS_READY.transitions.0.description`), not by text matching, so it
 survives `{parameter}` interpolation and YAML line wrapping. A missing key falls
 back to the English text, which means editing the definition in the browser never
 breaks the display.
 
-State identifiers (`AGR_READY`, …) stay English in both languages. They are
+State identifiers (`GENS_READY`, …) stay English in both languages. They are
 ESPHome entity names and MQTT topics; showing them translated would get in the
 way of comparing the panel against the controller's own log.
 
 ## Naming convention
 
-States carry a prefix: **`AGR_`** for the generator, **`RET_`** for the reactor's
+States carry a prefix: **`GENS_`** for the generator, **`RET_`** for the reactor's
 carbonisation phase, **`GAZ_`** for its gasification phase. Without it
-`AGR_RUNNING` and `GAZ_RUNNING` would collide — a running engine and a reactor
+`GENS_RUNNING` and `GAZ_RUNNING` would collide — a running engine and a reactor
 producing gas are not the same state.
 
 `RET_` and `GAZ_` are **two phases of one vessel**, not two machines. The
@@ -129,8 +129,8 @@ groups are mutually exclusive and `RET_COLD` is the only place the phase may
 change. What decides which group may run is `bed`: empty, wood, or char.
 
 The genset is a genuinely separate machine, joined by **single signals**, not by
-one transition table. `GAZ_` raises `gas_ready`, which widens the `AGR_READY`
-exit condition from `gen_request` to `gen_request and gas_ready`; `AGR_` raises
+one transition table. `GAZ_` raises `gas_ready`, which widens the `GENS_READY`
+exit condition from `gen_request` to `gen_request and gas_ready`; `GENS_` raises
 `engine_drawing`, which the reactor needs because gas does not flow without the
 engine drawing it. One combined table would multiply out and be unreadable at
 the first bug.
@@ -218,7 +218,7 @@ These are two requirements on two different clocks and they are now separate:
 - **`t_request_hold`** — the request must be continuously ON for this long. It
   lives in the **input filter** (`delayed_on` on the binary sensor), because
   holding a signal is signal conditioning.
-- **`t_ready`** — minimum dwell in `AGR_READY` after a closed cycle or a fault
+- **`t_ready`** — minimum dwell in `GENS_READY` after a closed cycle or a fault
   reset. Correctly a state timer, and correctly irrelevant once the controller
   has stood idle: a rested engine needs no dwell.
 

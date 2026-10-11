@@ -4,7 +4,7 @@
 #
 #  On the MINI a SINGLE MCP23017 at 0x20 serves both the inputs and the relays.
 #  The spreadsheet gives identical mapping for revisions 1.5, 1.6 and 1.7.
-#  States carry the AGR_ prefix — further layers: GAZ_ (gasifier), RET_ (retort).
+#  States carry the GENS_ prefix — further layers: GAZ_ (gasifier), RET_ (retort).
 #  State machine: https://www.enklava.co/files/symulator-agregatu-d2Ih/
 # =====================================================================
 
@@ -16,7 +16,7 @@ substitutions:
   # a state timer measures time in the state, which has already elapsed while
   # the controller sat idle, so the hold would never apply.
   t_request_hold: "5s"
-  # Minimum dwell in AGR_READY after a closed cycle or a fault reset. This one
+  # Minimum dwell in GENS_READY after a closed cycle or a fault reset. This one
   # is correctly a state timer.
   t_ready: "5"
   t_crank: "3"             # maximum duration of a single cranking attempt
@@ -44,8 +44,8 @@ api:
 
 # Fault notifications travel over the network, not on a relay contact.
 # Uncomment and set the broker — publishes on every state change:
-#   genset/state     AGR_READY | AGR_CRANKING | AGR_PAUSE | AGR_RUNNING
-#                  | AGR_STOPPING | AGR_FAULT
+#   genset/state     GENS_READY | GENS_CRANKING | GENS_PAUSE | GENS_RUNNING
+#                  | GENS_STOPPING | GENS_FAULT
 #   genset/fault     ON | OFF
 #   genset/attempts  0..3
 # From here an MQTT bridge reaches the Telegram bot.
@@ -136,7 +136,7 @@ globals:
   - id: state
     type: int
     restore_value: false
-    initial_value: '0'          # 0 = AGR_READY
+    initial_value: '0'          # 0 = GENS_READY
   - id: in_state
     type: float
     restore_value: false
@@ -230,8 +230,8 @@ script:
     then:
       - lambda: |-
           const int s = id(state);
-          const bool ign = (s>=1 && s<=3);        // AGR_CRANKING, PAUSE, RUNNING
-          const bool crk = (s==1);                // AGR_CRANKING only
+          const bool ign = (s>=1 && s<=3);        // GENS_CRANKING, PAUSE, RUNNING
+          const bool crk = (s==1);                // GENS_CRANKING only
           if (id(relay_01).state != ign) { ign ? id(relay_01).turn_on() : id(relay_01).turn_off(); }
           if (id(relay_02).state != crk) { crk ? id(relay_02).turn_on() : id(relay_02).turn_off(); }
 
@@ -240,7 +240,7 @@ interval:
     then:
       - lambda: |-
           static const char* NAMES[6] =
-            {"AGR_READY","AGR_CRANKING","AGR_PAUSE","AGR_RUNNING","AGR_STOPPING","AGR_FAULT"};
+            {"GENS_READY","GENS_CRANKING","GENS_PAUSE","GENS_RUNNING","GENS_STOPPING","GENS_FAULT"};
           const float DT = 0.1f;
           id(in_state) += DT;
 
@@ -253,14 +253,14 @@ interval:
           int next = s;
 
           switch (s) {
-            case 0: // AGR_READY
+            case 0: // GENS_READY
               // `req` is ALREADY qualified by delayed_on: ${t_request_hold} on
               // the binary_sensor — do not re-check the hold here. in_state is
               // the dwell in READY, which only bites right after a cycle or a
               // fault reset. !run blocks the start if the engine is still turning.
               if (req && !co && !run && id(in_state) >= ${t_ready}) next = 1;
               break;
-            case 1: // AGR_CRANKING
+            case 1: // GENS_CRANKING
               if (co) next = 5;
               else if (!req) next = 4;            // Deye signal lost — starter OFF
               else if (run) next = 3;             // run confirmed — starter OFF
@@ -269,22 +269,22 @@ interval:
                 next = (id(attempts) >= ${attempts_max}) ? 5 : 2;
               }
               break;
-            case 2: // AGR_PAUSE
+            case 2: // GENS_PAUSE
               if (co) next = 5;
               else if (run) next = 3;             // run confirmed with the starter OFF
               else if (!req) next = 0;
               else if (id(in_state) >= ${t_pause}) next = 1;
               break;
-            case 3: // AGR_RUNNING
+            case 3: // GENS_RUNNING
               if (co) next = 5;
               else if (!run) next = 5;            // run confirmation lost
               else if (!req) next = 4;            // ignition OFF
               break;
-            case 4: // AGR_STOPPING
+            case 4: // GENS_STOPPING
               if (!run) next = 0;
               else if (id(in_state) >= ${t_rundown}) next = 5;
               break;
-            case 5: // AGR_FAULT
+            case 5: // GENS_FAULT
               // !run blocks the reset while the engine is still turning
               if (rst && !co && !run) next = 0;
               break;

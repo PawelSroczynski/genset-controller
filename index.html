@@ -14,9 +14,9 @@ description: >
   signal drops. No gasifier here — no blower, no gas valve, no bed state.
   A cycle opens on the Deye signal and closes on the return to ready.
 
-  NAMING CONVENTION: states in this layer carry the AGR_ prefix (aggregate).
+  NAMING CONVENTION: states in this layer carry the GENS_ prefix (aggregate).
   Further layers get their own: GAZ_ for the gasifier, RET_ for the retort.
-  Without it AGR_RUNNING and GAZ_RUNNING would collide once the machines
+  Without it GENS_RUNNING and GAZ_RUNNING would collide once the machines
   stand side by side — a running engine and a reactor producing gas are not
   the same state.
 
@@ -44,7 +44,7 @@ parameters:
   # measures time in the state, which has already elapsed while the controller
   # sat idle. Same thing as `delayed_on` on the ESPHome binary_sensor.
   t_request_hold: 5      # s
-  # Minimum dwell in AGR_READY after a closed cycle or a fault reset, so the
+  # Minimum dwell in GENS_READY after a closed cycle or a fault reset, so the
   # controller never cranks again the instant the engine has stopped.
   # This one is correctly measured as time in the state.
   t_ready: 5             # s
@@ -192,7 +192,7 @@ outputs:
       ON = contactor closed, starter cranking. OFF = contactor open.
 
 states:
-  AGR_READY:
+  GENS_READY:
     x: 70
     y: 40
     description: >-
@@ -207,53 +207,53 @@ states:
     outputs: { ignition: false, starter: false }
     actions: { attempts: 0 }
     transitions:
-      - to: AGR_CRANKING
+      - to: GENS_CRANKING
         when: gen_request and not co_alarm and not running
         after: t_ready
         description: Request held {t_request_hold} s and ready dwell {t_ready} s elapsed — crank
 
-  AGR_CRANKING:
+  GENS_CRANKING:
     x: 300
     y: 40
     description: Starter engaged. The time limit protects the bendix.
     outputs: { ignition: true, starter: true }
     transitions:
-      - to: AGR_FAULT
+      - to: GENS_FAULT
         when: co_alarm
         description: CO alarm during cranking
-      - to: AGR_STOPPING
+      - to: GENS_STOPPING
         when: not gen_request
         description: Deye signal lost while cranking
-      - to: AGR_RUNNING
+      - to: GENS_RUNNING
         when: running
         description: Run confirmed
-      - to: AGR_FAULT
+      - to: GENS_FAULT
         after: t_crank
         when: attempts >= attempts_max - 1
         actions: { attempts: "+1" }
         description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_crank} s — attempt limit exhausted"
-      - to: AGR_PAUSE
+      - to: GENS_PAUSE
         after: t_crank
         actions: { attempts: "+1" }
         description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_crank} s — {t_pause} s pause"
 
-  AGR_RUNNING:
+  GENS_RUNNING:
     x: 530
     y: 40
     description: Engine running, inverter charging the bank.
     outputs: { ignition: true, starter: false }
     transitions:
-      - to: AGR_FAULT
+      - to: GENS_FAULT
         when: co_alarm
         description: CO alarm with the engine running
-      - to: AGR_FAULT
+      - to: GENS_FAULT
         when: not running
         description: Run confirmation lost without a stop command — cause outside the controller
-      - to: AGR_STOPPING
+      - to: GENS_STOPPING
         when: not gen_request
         description: Deye signal lost
 
-  AGR_FAULT:
+  GENS_FAULT:
     x: 70
     y: 170
     fault: true
@@ -262,39 +262,39 @@ states:
       run confirmation persists — that would mean a defective kill circuit.
     outputs: { ignition: false, starter: false }
     transitions:
-      - to: AGR_READY
+      - to: GENS_READY
         when: reset and not co_alarm and not running
         description: Fault reset
 
-  AGR_PAUSE:
+  GENS_PAUSE:
     x: 300
     y: 170
     description: Starter thermal rest before the next attempt.
     outputs: { ignition: true, starter: false }
     transitions:
-      - to: AGR_FAULT
+      - to: GENS_FAULT
         when: co_alarm
         description: CO alarm between attempts
-      - to: AGR_RUNNING
+      - to: GENS_RUNNING
         when: running
         description: Run confirmed with the starter OFF
-      - to: AGR_READY
+      - to: GENS_READY
         when: not gen_request
         description: Deye signal lost between attempts — cycle aborted
-      - to: AGR_CRANKING
+      - to: GENS_CRANKING
         after: t_pause
         description: "{t_pause} s pause elapsed — next attempt"
 
-  AGR_STOPPING:
+  GENS_STOPPING:
     x: 530
     y: 170
     description: Ignition relay OFF — the NC contact shorts the ignition to ground.
     outputs: { ignition: false, starter: false }
     transitions:
-      - to: AGR_READY
+      - to: GENS_READY
         when: not running
         description: Run confirmation lost
-      - to: AGR_FAULT
+      - to: GENS_FAULT
         after: t_rundown
         description: "Run confirmation held {t_rundown} s after the ignition was shorted — kill circuit defective"
 </script>
@@ -313,7 +313,7 @@ description: >
   chain is a feedback loop:
 
       cells -> BMS (SOC estimate) -> Deye (Start threshold) -> GS contact
-            -> IN-01 -> AGR_ -> genset -> GEN port -> charges the bank -> cells
+            -> IN-01 -> GENS_ -> genset -> GEN port -> charges the bank -> cells
 
 # =====================================================================
 #  HARDWARE — figures from the installation, not invented
@@ -383,10 +383,10 @@ deye:
 # =====================================================================
 clock:
   warp: 240                # 1 s of simulation = 4 min of plant, while idle
-  realtime_states: [AGR_CRANKING, AGR_PAUSE, AGR_STOPPING, AGR_FAULT]
+  realtime_states: [GENS_CRANKING, GENS_PAUSE, GENS_STOPPING, GENS_FAULT]
   realtime_on_request: true   # also drop to 1x as soon as the request appears,
                               # so the request hold and the ready dwell are
-                              # watchable. IN AGR_READY ONLY: the request stays
+                              # watchable. IN GENS_READY ONLY: the request stays
                               # asserted for the whole charging run, and without
                               # that restriction the clock sat at 1x for hours
                               # of charging and gave back half the benefit.
@@ -465,7 +465,7 @@ states_deye:
 #  the split into layers, the sequences and the interlocks — for review and
 #  correction on paper, before the machines have signals.
 #
-#  TWO MACHINES, NOT ONE TABLE. The genset (AGR_, in state-machine.yaml) is
+#  TWO MACHINES, NOT ONE TABLE. The genset (GENS_, in state-machine.yaml) is
 #  untouched. Two parallel layers are added here, and the joint between them
 #  is a SINGLE SIGNAL each way, not shared transitions. Folding everything
 #  into one table would multiply out to 6 x 10 x 9 combinations and the table
@@ -486,7 +486,7 @@ name: Hybrid — pyrolysis retort and water-gas gasifier
 #  that is now the most important thing this model has to express.
 
 layers:
-  AGR_: genset FOGO FH9000R — separate machine, finished, in state-machine.yaml
+  GENS_: genset FOGO FH9000R — separate machine, finished, in state-machine.yaml
   RET_: reactor, carbonisation phase — wood to a charcoal bed, batch
   GAZ_: reactor, gasification phase — water gas from that same bed
 
@@ -494,12 +494,12 @@ layers:
 #  THE JOINT BETWEEN LAYERS — this is the whole integration
 # =====================================================================
 #
-#  GAZ_ -> AGR_   one signal: `gas_ready`
-#                 The AGR_READY exit condition widens from `gen_request`
+#  GAZ_ -> GENS_   one signal: `gas_ready`
+#                 The GENS_READY exit condition widens from `gen_request`
 #                 to `gen_request and gas_ready`.
 #                 THAT IS THE ONLY CHANGE TO THE GENSET MACHINE. Nothing else.
 #
-#  AGR_ -> GAZ_   one signal: `engine_drawing`  (AGR_ is in AGR_RUNNING)
+#  GENS_ -> GAZ_   one signal: `engine_drawing`  (GENS_ is in GENS_RUNNING)
 #                 The gasifier needs it: without the engine drawing, gas does
 #                 not flow, the reactor idles and the bed cools down.
 #
@@ -580,19 +580,19 @@ coupling:
       source: states_gas
       order: [GAZ_COLD, GAZ_LIGHTING, GAZ_WARMUP, GAZ_FLARE, GAZ_READY,
               GAZ_PURGE, GAZ_SUPPLYING, GAZ_SHUTDOWN, GAZ_COOLDOWN, GAZ_FAULT]
-    - layer: AGR_
-      label: Genset FH9000R — live machine, simulated in the AGR_ view
+    - layer: GENS_
+      label: Genset FH9000R — live machine, simulated in the GENS_ view
       source: state_machine
-      order: [AGR_READY, AGR_CRANKING, AGR_PAUSE, AGR_RUNNING, AGR_STOPPING, AGR_FAULT]
+      order: [GENS_READY, GENS_CRANKING, GENS_PAUSE, GENS_RUNNING, GENS_STOPPING, GENS_FAULT]
   links:
     - from: GAZ_READY
-      to: AGR_READY
+      to: GENS_READY
       signal: gas_ready
       kind: signal
       description: >-
-        Widens the AGR_READY exit condition from `gen_request` to
+        Widens the GENS_READY exit condition from `gen_request` to
         `gen_request and gas_ready`. THE ONLY CHANGE TO THE GENSET MACHINE.
-    - from: AGR_RUNNING
+    - from: GENS_RUNNING
       to: GAZ_PURGE
       signal: engine_drawing
       kind: signal
@@ -842,7 +842,7 @@ states_gas:
     y: 40
     description: >-
       THIS IS THE JOINT. The only state that raises the `gas_ready` signal read
-      by the AGR_ layer. The reactor makes gas to the flare and waits. The
+      by the GENS_ layer. The reactor makes gas to the flare and waits. The
       genset may start, or may not. The engine valve is still closed — it opens
       only after the purge, once the genset reports that it is drawing.
     outputs: { blower: true, steam_injection: true, flare_valve: true, engine_gas_valve: false }
@@ -1127,7 +1127,7 @@ gaps:
 //  zawijaniu wierszy przez YAML-a. Brak klucza = tekst angielski z YAML-a,
 //  więc po edycji definicji w okienku nic nie przestaje działać.
 //
-//  Identyfikatory stanów (AGR_READY…) zostają angielskie w obu językach.
+//  Identyfikatory stanów (GENS_READY…) zostają angielskie w obu językach.
 //  To nazwy encji w ESPHome i tematów MQTT — pokazywanie ich w tłumaczeniu
 //  utrudniałoby diagnostykę przy porównywaniu z logiem sterownika.
 // =====================================================================
@@ -1173,7 +1173,7 @@ const I18N = {
       'word.datasheet':   'datasheet',
       'skeleton.badge':   'interworking \u2014 not simulated, English only',
       'skeleton.pick':    'Click any state in the diagram to read it',
-      'layer.agr.title':  'Genset \u2014 live machine, simulated',
+      'layer.gens.title':  'Genset \u2014 live machine, simulated',
       'layer.gaz.title':  'Interworking: genset, gasifier and retort on one diagram',
       'shared.label':     'shared, above the layers',
       'word.phase':       'same vessel, phase handover',
@@ -1263,7 +1263,7 @@ const I18N = {
       'word.datasheet':   'karta katalogowa',
       'skeleton.badge':   'współdziałanie \u2014 bez symulacji, opisy po angielsku',
       'skeleton.pick':    'Kliknij stan na schemacie, żeby go przeczytać',
-      'layer.agr.title':  'Agregat \u2014 maszyna żywa, symulowana',
+      'layer.gens.title':  'Agregat \u2014 maszyna żywa, symulowana',
       'layer.gaz.title':  'Współdziałanie: agregat, gazogenerator i retorta na jednym schemacie',
       'shared.label':     'wspólne, ponad warstwami',
       'word.phase':       'to samo urządzenie, zmiana fazy',
@@ -1312,7 +1312,7 @@ const I18N = {
     },
     yaml: {
       'description':
-        'Modeluje WYŁĄCZNIE agregat. Odczyt styku G-start z Deye, rozruch z limitem prób, gaszenie przez zwarcie zapłonu do masy po zaniku sygnału. Zgazowywacza tu nie ma — ani dmuchawy, ani zaworu gazu, ani stanu złoża. Cykl zaczyna sygnał z Deye, kończy powrót do gotowości.\n\nKONWENCJA NAZW: stany tej warstwy mają prefiks AGR_ (agregat). Kolejne warstwy dostaną własne: GAZ_ dla gazogeneratora, RET_ dla retorty. Bez tego AGR_RUNNING i GAZ_RUNNING zderzyłyby się, gdy maszyny staną obok siebie — pracujący silnik i reaktor w produkcji gazu to nie ten sam stan.',
+        'Modeluje WYŁĄCZNIE agregat. Odczyt styku G-start z Deye, rozruch z limitem prób, gaszenie przez zwarcie zapłonu do masy po zaniku sygnału. Zgazowywacza tu nie ma — ani dmuchawy, ani zaworu gazu, ani stanu złoża. Cykl zaczyna sygnał z Deye, kończy powrót do gotowości.\n\nKONWENCJA NAZW: stany tej warstwy mają prefiks GENS_ (agregat). Kolejne warstwy dostaną własne: GAZ_ dla gazogeneratora, RET_ dla retorty. Bez tego GENS_RUNNING i GAZ_RUNNING zderzyłyby się, gdy maszyny staną obok siebie — pracujący silnik i reaktor w produkcji gazu to nie ten sam stan.',
 
       'inputs.gen_request.label': 'Sygnał startowy z Deye',
       'inputs.gen_request.description':
@@ -1360,41 +1360,41 @@ const I18N = {
       'measurements.p_pv.label': 'Moc PV',
       'measurements.p_pv.description': '8 × JA Solar JAM72D30-540/MB, 4,32 kWp na stodole.',
 
-      'states.AGR_READY.description':
+      'states.GENS_READY.description':
         'Sterownik zasilany, wyjścia w stanie bezpiecznym. Linia gaszenia zwarta do masy. Start blokują dwa niezależne warunki na dwóch różnych zegarach: żądanie musi być przytrzymane {t_request_hold} s (filtr wejścia) ORAZ sterownik musi stać w tym stanie {t_ready} s (zegar stanu). Drugi warunek liczy się tylko zaraz po cyklu albo po skasowaniu awarii; gdy sterownik już postał, jest dawno spełniony — i tak ma być, wypoczęty silnik nie potrzebuje postoju. Warunek `not running` blokuje start, jeśli silnik z jakiegoś powodu nadal chodzi.',
-      'states.AGR_READY.transitions.0.description':
+      'states.GENS_READY.transitions.0.description':
         'Żądanie przytrzymane {t_request_hold} s i postój w gotowości {t_ready} s minął — rozruch',
 
-      'states.AGR_CRANKING.description':
+      'states.GENS_CRANKING.description':
         'Rozrusznik załączony. Limit czasu chroni bendiks.',
-      'states.AGR_CRANKING.transitions.0.description': 'Alarm CO podczas rozruchu',
-      'states.AGR_CRANKING.transitions.1.description': 'Zanik sygnału z Deye w trakcie rozruchu',
-      'states.AGR_CRANKING.transitions.2.description': 'Potwierdzenie pracy',
-      'states.AGR_CRANKING.transitions.3.description':
+      'states.GENS_CRANKING.transitions.0.description': 'Alarm CO podczas rozruchu',
+      'states.GENS_CRANKING.transitions.1.description': 'Zanik sygnału z Deye w trakcie rozruchu',
+      'states.GENS_CRANKING.transitions.2.description': 'Potwierdzenie pracy',
+      'states.GENS_CRANKING.transitions.3.description':
         'Próba {attempts}/{attempts_max}: brak potwierdzenia pracy w {t_crank} s — wyczerpany limit prób',
-      'states.AGR_CRANKING.transitions.4.description':
+      'states.GENS_CRANKING.transitions.4.description':
         'Próba {attempts}/{attempts_max}: brak potwierdzenia pracy w {t_crank} s — przerwa {t_pause} s',
 
-      'states.AGR_RUNNING.description': 'Silnik pracuje, falownik ładuje bank.',
-      'states.AGR_RUNNING.transitions.0.description': 'Alarm CO przy pracującym silniku',
-      'states.AGR_RUNNING.transitions.1.description':
+      'states.GENS_RUNNING.description': 'Silnik pracuje, falownik ładuje bank.',
+      'states.GENS_RUNNING.transitions.0.description': 'Alarm CO przy pracującym silniku',
+      'states.GENS_RUNNING.transitions.1.description':
         'Zanik potwierdzenia pracy bez polecenia gaszenia — przyczyna poza sterownikiem',
-      'states.AGR_RUNNING.transitions.2.description': 'Zanik sygnału z Deye',
+      'states.GENS_RUNNING.transitions.2.description': 'Zanik sygnału z Deye',
 
-      'states.AGR_FAULT.description':
+      'states.GENS_FAULT.description':
         'Przekaźnik zapłonu OFF. Wymaga ręcznego skasowania. Kasowanie zablokowane, dopóki utrzymuje się potwierdzenie pracy — oznacza to niesprawny obwód gaszenia.',
-      'states.AGR_FAULT.transitions.0.description': 'Kasowanie awarii',
+      'states.GENS_FAULT.transitions.0.description': 'Kasowanie awarii',
 
-      'states.AGR_PAUSE.description': 'Przerwa termiczna rozrusznika przed kolejną próbą.',
-      'states.AGR_PAUSE.transitions.0.description': 'Alarm CO między próbami',
-      'states.AGR_PAUSE.transitions.1.description': 'Potwierdzenie pracy przy rozruszniku OFF',
-      'states.AGR_PAUSE.transitions.2.description': 'Zanik sygnału z Deye między próbami — cykl przerwany',
-      'states.AGR_PAUSE.transitions.3.description': 'Przerwa {t_pause} s upłynęła — kolejna próba',
+      'states.GENS_PAUSE.description': 'Przerwa termiczna rozrusznika przed kolejną próbą.',
+      'states.GENS_PAUSE.transitions.0.description': 'Alarm CO między próbami',
+      'states.GENS_PAUSE.transitions.1.description': 'Potwierdzenie pracy przy rozruszniku OFF',
+      'states.GENS_PAUSE.transitions.2.description': 'Zanik sygnału z Deye między próbami — cykl przerwany',
+      'states.GENS_PAUSE.transitions.3.description': 'Przerwa {t_pause} s upłynęła — kolejna próba',
 
-      'states.AGR_STOPPING.description':
+      'states.GENS_STOPPING.description':
         'Przekaźnik zapłonu OFF — styk NC zwiera zapłon do masy.',
-      'states.AGR_STOPPING.transitions.0.description': 'Zanik potwierdzenia pracy',
-      'states.AGR_STOPPING.transitions.1.description':
+      'states.GENS_STOPPING.transitions.0.description': 'Zanik potwierdzenia pracy',
+      'states.GENS_STOPPING.transitions.1.description':
         'Potwierdzenie pracy utrzymane {t_rundown} s po zwarciu zapłonu — obwód gaszenia niesprawny'
     }
   }
@@ -1723,7 +1723,7 @@ footer .jezyk button{padding:4px 8px;font-size:10.5px}
   <div class="synoptyka" id="synoptyka"></div>
   <div class="diagram">
     <div class="warstwy">
-      <button data-w="AGR" class="akt">AGR_</button><button data-w="GAZ">GAZ_</button>
+      <button data-w="GENS" class="akt">GENS_</button><button data-w="GAZ">GAZ_</button>
       <span class="szk-plakietka" id="szkBadge"></span>
     </div>
     <div class="plotno" id="plotno"><svg id="svg" preserveAspectRatio="xMidYMid meet"></svg></div>
@@ -1861,10 +1861,10 @@ let poprzWe={}, poprzWy={}, poprzF={};
 let weF={}, holdT={};                  // wartości po filtrze przytrzymania i ich zegary
 const PROG_NIEUDANEJ=0.25;             // udział prób, które nie zaskoczą
 let M=null, stan=null, t=0, wStanie=0, we={}, lic={}, gra=false, petla=null, zrodlo='';
-// warstwy: AGR_ jest maszyną żywą, GAZ_ i RET_ to szkielet z hybrid-skeleton.yaml,
+// warstwy: GENS_ jest maszyną żywą, GAZ_ i RET_ to szkielet z hybrid-skeleton.yaml,
 // rysowany poglądowo. Szkielet nie ma sygnałów ani parametrów, więc go nie symulujemy —
 // `gotowe()` nie jest na nim wywoływane i żaden węzeł nie jest „bieżący".
-let SZK=null, warstwa='AGR', wybSzk=null;
+let SZK=null, warstwa='GENS', wybSzk=null;
 // Zbiór wszystkich stanów trzech warstw — potrzebny, bo w schemacie
 // współdziałania klikalne są chipy z każdej z nich.
 function zrodloStanow(nazwa){
@@ -1884,12 +1884,12 @@ function ustawWarstwe(w){
   warstwa=w; wybSzk=null;
   document.querySelectorAll('.warstwy > button').forEach(b=>b.classList.toggle('akt',b.dataset.w===w));
   const bd=document.getElementById('szkBadge');
-  bd.classList.toggle('widac', w!=='AGR'); bd.textContent=T('skeleton.badge');
+  bd.classList.toggle('widac', w!=='GENS'); bd.textContent=T('skeleton.badge');
   ostatniStan=null; ostatniSvg='';
   panelStanu(); odswiez();
 }
 function panelStanu(){
-  if(warstwa==='AGR'){ ostatniStan=null; return; }   // wypełni odswiez()
+  if(warstwa==='GENS'){ ostatniStan=null; return; }   // wypełni odswiez()
   const S=wszystkieStany();
   const nz=document.getElementById('stanNazwa'), op=document.getElementById('stanOpis');
   const pc=document.getElementById('przejscia');
@@ -2191,7 +2191,7 @@ function dzwiekPrzejscia(warstwa, indeks, awaria){
     return;
   }
   const f=SKALA[((indeks%SKALA.length)+SKALA.length)%SKALA.length];
-  if(warstwa==='AGR') ton(f, 0.16, 'sine', 0.055);
+  if(warstwa==='GENS') ton(f, 0.16, 'sine', 0.055);
   else                ton(f/2, 0.24, 'triangle', 0.038);   // Deye niżej i miękcej
 }
 function ustawDzwiek(v){
@@ -2208,7 +2208,7 @@ function ustawDzwiek(v){
 //
 //  `gen_request` NIE JEST wejściem swobodnym. Jest wyjściem Deye, policzonym
 //  z SOC z histerezą. Klikanie go ręcznie modelowało nie tę warstwę, co trzeba.
-//  Łańcuch jest pętlą: ogniwa → BMS → Deye → styk GS → IN-01 → AGR_ →
+//  Łańcuch jest pętlą: ogniwa → BMS → Deye → styk GS → IN-01 → GENS_ →
 //  agregat → port GEN → ładowanie banku → ogniwa.
 // =====================================================================
 let PL=null, INST={}, modelDeye=true;
@@ -2227,7 +2227,7 @@ function warpTeraz(){
   // Tylko w GOTOWOŚCI. Żądanie wisi przez cały czas ładowania, więc bez tego
   // warunku zegar zostawał na 1x przez godziny ładowania i kasował pół zysku.
   // Chodzi o to, żeby dało się obejrzeć przytrzymanie i postój przed rozruchem.
-  if(c.realtime_on_request && stan==='AGR_READY'
+  if(c.realtime_on_request && stan==='GENS_READY'
      && (we.gen_request||weF.gen_request)) return 1;
   return c.warp||1;
 }
@@ -2369,7 +2369,7 @@ function tik(dt){
       // migawka PO zastosowaniu akcji — opis „Próba {attempts}/{attempts_max}"
       // ma pokazywać licznik już zinkrementowany
       dopisz({typ:'przejscie',z:poprz,cel:stan,i:i,snap:migawka(),kl:kl});
-      dzwiekPrzejscia('AGR', Object.keys(M.states).indexOf(stan), jestAwaria(stan));
+      dzwiekPrzejscia('GENS', Object.keys(M.states).indexOf(stan), jestAwaria(stan));
       zastosujAkcje((M.states[stan]||{}).actions);
       if (poprz===stanIdle && stan!==stanIdle) { cyklStart=t; }
       if (poprz!==stanIdle && stan===stanIdle) {
@@ -2481,9 +2481,9 @@ function rysujWejscia(){
 // mniejszy niż MIN_TEKST — poniżej tego progu płótno przewija się zamiast kurczyć
 // dalej. Przy 1600x900 samo dopasowanie dawało tekst chipu 3,5 px.
 //
-// Próg jest w ROZMIARZE TEKSTU, nie w surowej skali: węzły AGR_ mają czcionkę 13,
+// Próg jest w ROZMIARZE TEKSTU, nie w surowej skali: węzły GENS_ mają czcionkę 13,
 // chipy schematu 10,5, więc ta sama skala daje w obu widokach inną czytelność
-// i stały próg skali niepotrzebnie włączałby przewijanie w widoku AGR_.
+// i stały próg skali niepotrzebnie włączałby przewijanie w widoku GENS_.
 const MIN_TEKST = 8.4;
 function dopasujPlotno(vbW, vbH, czcionkaBazowa){
   const svg=document.getElementById('svg'), pl=document.getElementById('plotno');
@@ -2495,7 +2495,7 @@ function dopasujPlotno(vbW, vbH, czcionkaBazowa){
 }
 
 function rysujSvg(){
-  if(warstwa!=='AGR'){ rysujWspoldzialanie(); return; }
+  if(warstwa!=='GENS'){ rysujWspoldzialanie(); return; }
   const S=M.states;
   if(!S || !Object.keys(S).length) { document.getElementById('svg').innerHTML=''; return; }
   const W=160, H=56, MAR=26;
@@ -2507,7 +2507,7 @@ function rysujSvg(){
   const svg=document.getElementById('svg');
   svg.setAttribute('viewBox',(minX-MAR)+' '+(minY-MAR)+' '+
     (maxX-minX+2*MAR)+' '+(maxY-minY+2*MAR));
-  dopasujPlotno(maxX-minX+2*MAR, maxY-minY+2*MAR, 13);   // czcionka węzła AGR_
+  dopasujPlotno(maxX-minX+2*MAR, maxY-minY+2*MAR, 13);   // czcionka węzła GENS_
   let g='<defs><marker id="gr" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">'+
         '<path d="M0,0 L8,3 L0,6 z" fill="#52677c"/></marker>'+
         '<marker id="grA" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">'+
@@ -2661,7 +2661,7 @@ function rysujWspoldzialanie(){
   // gas_ready i engine_drawing nie nałożyły się etykietami w tym samym korytarzu.
   // Kanał wybiera się z PARY PASÓW, które sprzęgło łączy, nie z nazwy sygnału —
   // nazwy się zmieniają, geometria nie. Dwa sprzęgła w tym samym korytarzu
-  // (GAZ_→AGR_ i AGR_→GAZ_) rozsuwa kierunek.
+  // (GAZ_→GENS_ i GENS_→GAZ_) rozsuwa kierunek.
   const STYL={
     phase:     {kolor:'#4fb477', marker:'wsF', kreska:'', grubosc:2.1, etyk:'word.phase'},
     inventory: {kolor:'#e0a14b', marker:'wsI', kreska:'stroke-dasharray="6 4" ', grubosc:1.5, etyk:'word.inventory'},
@@ -2922,7 +2922,7 @@ function odswiez(){
       ? (lic[k]+'/'+limit) : lic[k];
   cacheLic.__czas.textContent=wStanie.toFixed(1)+' s';
 
-  if(warstwa!=='AGR'){
+  if(warstwa!=='GENS'){
     // szkielet: kolumny wejść/wyjść/dziennika nadal pokazują ŻYWY agregat,
     // bo on się nie zatrzymał. Zmienia się wyłącznie diagram i kolumna stanu.
     const sig='SZK|'+warstwa+'|'+wybSzk;

@@ -5,9 +5,9 @@ description: >
   signal drops. No gasifier here — no blower, no gas valve, no bed state.
   A cycle opens on the Deye signal and closes on the return to ready.
 
-  NAMING CONVENTION: states in this layer carry the AGR_ prefix (aggregate).
+  NAMING CONVENTION: states in this layer carry the GENS_ prefix (aggregate).
   Further layers get their own: GAZ_ for the gasifier, RET_ for the retort.
-  Without it AGR_RUNNING and GAZ_RUNNING would collide once the machines
+  Without it GENS_RUNNING and GAZ_RUNNING would collide once the machines
   stand side by side — a running engine and a reactor producing gas are not
   the same state.
 
@@ -35,7 +35,7 @@ parameters:
   # measures time in the state, which has already elapsed while the controller
   # sat idle. Same thing as `delayed_on` on the ESPHome binary_sensor.
   t_request_hold: 5      # s
-  # Minimum dwell in AGR_READY after a closed cycle or a fault reset, so the
+  # Minimum dwell in GENS_READY after a closed cycle or a fault reset, so the
   # controller never cranks again the instant the engine has stopped.
   # This one is correctly measured as time in the state.
   t_ready: 5             # s
@@ -183,7 +183,7 @@ outputs:
       ON = contactor closed, starter cranking. OFF = contactor open.
 
 states:
-  AGR_READY:
+  GENS_READY:
     x: 70
     y: 40
     description: >-
@@ -198,53 +198,53 @@ states:
     outputs: { ignition: false, starter: false }
     actions: { attempts: 0 }
     transitions:
-      - to: AGR_CRANKING
+      - to: GENS_CRANKING
         when: gen_request and not co_alarm and not running
         after: t_ready
         description: Request held {t_request_hold} s and ready dwell {t_ready} s elapsed — crank
 
-  AGR_CRANKING:
+  GENS_CRANKING:
     x: 300
     y: 40
     description: Starter engaged. The time limit protects the bendix.
     outputs: { ignition: true, starter: true }
     transitions:
-      - to: AGR_FAULT
+      - to: GENS_FAULT
         when: co_alarm
         description: CO alarm during cranking
-      - to: AGR_STOPPING
+      - to: GENS_STOPPING
         when: not gen_request
         description: Deye signal lost while cranking
-      - to: AGR_RUNNING
+      - to: GENS_RUNNING
         when: running
         description: Run confirmed
-      - to: AGR_FAULT
+      - to: GENS_FAULT
         after: t_crank
         when: attempts >= attempts_max - 1
         actions: { attempts: "+1" }
         description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_crank} s — attempt limit exhausted"
-      - to: AGR_PAUSE
+      - to: GENS_PAUSE
         after: t_crank
         actions: { attempts: "+1" }
         description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_crank} s — {t_pause} s pause"
 
-  AGR_RUNNING:
+  GENS_RUNNING:
     x: 530
     y: 40
     description: Engine running, inverter charging the bank.
     outputs: { ignition: true, starter: false }
     transitions:
-      - to: AGR_FAULT
+      - to: GENS_FAULT
         when: co_alarm
         description: CO alarm with the engine running
-      - to: AGR_FAULT
+      - to: GENS_FAULT
         when: not running
         description: Run confirmation lost without a stop command — cause outside the controller
-      - to: AGR_STOPPING
+      - to: GENS_STOPPING
         when: not gen_request
         description: Deye signal lost
 
-  AGR_FAULT:
+  GENS_FAULT:
     x: 70
     y: 170
     fault: true
@@ -253,38 +253,38 @@ states:
       run confirmation persists — that would mean a defective kill circuit.
     outputs: { ignition: false, starter: false }
     transitions:
-      - to: AGR_READY
+      - to: GENS_READY
         when: reset and not co_alarm and not running
         description: Fault reset
 
-  AGR_PAUSE:
+  GENS_PAUSE:
     x: 300
     y: 170
     description: Starter thermal rest before the next attempt.
     outputs: { ignition: true, starter: false }
     transitions:
-      - to: AGR_FAULT
+      - to: GENS_FAULT
         when: co_alarm
         description: CO alarm between attempts
-      - to: AGR_RUNNING
+      - to: GENS_RUNNING
         when: running
         description: Run confirmed with the starter OFF
-      - to: AGR_READY
+      - to: GENS_READY
         when: not gen_request
         description: Deye signal lost between attempts — cycle aborted
-      - to: AGR_CRANKING
+      - to: GENS_CRANKING
         after: t_pause
         description: "{t_pause} s pause elapsed — next attempt"
 
-  AGR_STOPPING:
+  GENS_STOPPING:
     x: 530
     y: 170
     description: Ignition relay OFF — the NC contact shorts the ignition to ground.
     outputs: { ignition: false, starter: false }
     transitions:
-      - to: AGR_READY
+      - to: GENS_READY
         when: not running
         description: Run confirmation lost
-      - to: AGR_FAULT
+      - to: GENS_FAULT
         after: t_rundown
         description: "Run confirmation held {t_rundown} s after the ignition was shorted — kill circuit defective"

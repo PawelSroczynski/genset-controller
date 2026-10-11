@@ -12,7 +12,7 @@ description: >
   chain is a feedback loop:
 
       cells -> BMS (SOC estimate) -> Deye (Start threshold) -> GS contact
-            -> IN-01 -> AGR_ -> genset -> GEN port -> charges the bank -> cells
+            -> IN-01 -> GENS_ -> genset -> GEN port -> charges the bank -> cells
 
 # =====================================================================
 #  HARDWARE — figures from the installation, not invented
@@ -82,10 +82,10 @@ deye:
 # =====================================================================
 clock:
   warp: 240                # 1 s of simulation = 4 min of plant, while idle
-  realtime_states: [AGR_CRANKING, AGR_PAUSE, AGR_STOPPING, AGR_FAULT]
+  realtime_states: [GENS_CRANKING, GENS_PAUSE, GENS_STOPPING, GENS_FAULT]
   realtime_on_request: true   # also drop to 1x as soon as the request appears,
                               # so the request hold and the ready dwell are
-                              # watchable. IN AGR_READY ONLY: the request stays
+                              # watchable. IN GENS_READY ONLY: the request stays
                               # asserted for the whole charging run, and without
                               # that restriction the clock sat at 1x for hours
                               # of charging and gave back half the benefit.
