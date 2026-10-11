@@ -21,12 +21,49 @@ the winter.
 
 | file | what it is |
 |---|---|
-| `state-machine.yaml` | the state machine as data — states, transitions, inputs, outputs, parameters. The canonical definition. |
+| `state-machine.yaml` | the state machine as data — states, transitions, inputs, outputs, parameters, and nothing else. The canonical definition. |
 | `genset-controller.yaml` | ESPHome configuration for a SMARTBOB SM-MINI-0808R. Implements the same machine in a 100 ms `interval` lambda. |
+| `deye-modbus.yaml` | the inverter readout, as an opt-in ESPHome package. No state reads it. |
 | `hybrid-skeleton.yaml` | state skeleton for the gasifier (`GAZ_`) and the retort (`RET_`) layers. `mode: skeleton` — no pins assigned, not flashable. For review on paper. |
-| `plant.yaml` | the installation around the controller: bank, PV, loads, and the Deye with its thresholds. Separate on purpose — `state-machine.yaml` is what gets flashed, this is the world it sits in. |
+| `plant.yaml` | everything the simulator needs and the controller must not have: the plant (bank, PV, loads, Deye) and the view (gauges, diagram layout, labels, sound). |
 | `index.html` | the simulator. Single file, all three YAMLs embedded, runs the machine in the browser with models of the engine and of the plant. PL/EN. |
 | `embed.py` | injects the YAML sources into `index.html`. Run it after touching any of them. |
+
+## What lives where
+
+The split is the point, and it is enforced by what each file may contain.
+
+**`state-machine.yaml` is the part that could be flashed.** States, transitions,
+inputs, outputs, parameters, counters. One short line of description per item,
+because a maintainer reading a state table should not have to scroll past an
+essay to find the next state. No datasheets, no gauges, no diagram coordinates,
+no sounds — none of those can affect a transition, so none of them belongs in
+the file that decides transitions.
+
+**`plant.yaml` is everything else the simulator needs,** and nothing in it may
+become an input to a state. It carries the plant (bank, PV, loads, the Deye and
+its thresholds) and the view (gauges, the synoptic chain, diagram layout, relay
+labels, which signal makes which sound).
+
+**The reasoning lives here, in this file.** Not in YAML comments, where it was
+duplicated, and not in the ESPHome config, which is long enough already.
+
+**The Deye readout is an opt-in package.** `deye-modbus.yaml` holds the UART,
+the Modbus controller and the registers. To enable it, add to
+`genset-controller.yaml`:
+
+```yaml
+packages:
+  deye: !include deye-modbus.yaml
+```
+
+It used to sit commented out inside the controller config, which is the same
+thing as dead code.
+
+**Fault notification is not wired.** When it is, it goes over the network and
+not on a relay contact: an `mqtt:` block publishing `genset/state`,
+`genset/fault` and `genset/attempts`, from where a bridge reaches the Telegram
+bot. Nothing in the repository configures a broker.
 
 ## The simulator
 

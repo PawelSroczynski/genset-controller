@@ -1,0 +1,117 @@
+# Deye readout over Modbus RTU — OPT-IN, not part of the controller.
+#
+# The state machine does not read any of this. It is here so the inverter's own
+# numbers can be compared against the controller's inputs, and so the register
+# map is not lost. To enable, add to genset-controller.yaml:
+#
+#   packages:
+#     deye: !include deye-modbus.yaml
+#
+# The inverter is a Modbus RTU slave at address 1, 9600 8N1.
+#
+# !! THE REGISTER ADDRESSES ARE COMMUNITY-SOURCED, NOT FROM DEYE. The map comes
+# from the SG04LP3 family; Deye publishes no register table. Compare the first
+# readings against the inverter's own screen.
+#
+# !! RS485 DIRECTION CONTROL. ESPHome does not drive a DE/RE pin. On modules
+# without automatic direction switching the queries go out and nothing comes
+# back — "no response received" on a healthy inverter. `debug: direction: BOTH`
+# prints both directions; TX with no RX is a direction problem, not a wrong
+# register.
+
+uart:
+  - id: mod_uart
+    tx_pin: 33
+    rx_pin: 13
+    baud_rate: 9600
+    data_bits: 8
+    parity: NONE
+    stop_bits: 1
+    debug:
+      direction: BOTH        # keep this on for the first run
+
+modbus:
+  - id: mod_bus
+    uart_id: mod_uart
+
+modbus_controller:
+  - id: deye
+    address: 1
+    modbus_id: mod_bus
+    update_interval: 10s
+    setup_priority: -10
+
+sensor:
+  - platform: modbus_controller
+    modbus_controller_id: deye
+    name: "Deye bank SOC"
+    address: 588
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "%"
+    device_class: battery
+    accuracy_decimals: 0
+
+  - platform: modbus_controller
+    modbus_controller_id: deye
+    name: "Deye bank voltage"
+    address: 587
+    register_type: holding
+    value_type: U_WORD
+    filters: [ multiply: 0.01 ]
+    unit_of_measurement: V
+    device_class: voltage
+    accuracy_decimals: 2
+
+  - platform: modbus_controller
+    modbus_controller_id: deye
+    name: "Deye bank power"          # positive discharges, negative charges
+    address: 590
+    register_type: holding
+    value_type: S_WORD
+    unit_of_measurement: W
+    device_class: power
+    accuracy_decimals: 0
+
+  - platform: modbus_controller
+    modbus_controller_id: deye
+    name: "Deye PV1 power"
+    address: 672
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: W
+    device_class: power
+    accuracy_decimals: 0
+
+  - platform: modbus_controller
+    modbus_controller_id: deye
+    name: "Deye PV2 power"
+    address: 673
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: W
+    device_class: power
+    accuracy_decimals: 0
+
+  # 661 and 667 are an independent witness against IN-02: the genset's output
+  # voltage measured a second time, by a different device.
+  - platform: modbus_controller
+    modbus_controller_id: deye
+    name: "Deye GEN phase A voltage"
+    address: 661
+    register_type: holding
+    value_type: U_WORD
+    filters: [ multiply: 0.1 ]
+    unit_of_measurement: V
+    device_class: voltage
+    accuracy_decimals: 1
+
+  - platform: modbus_controller
+    modbus_controller_id: deye
+    name: "Deye GEN port power"
+    address: 667
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: W
+    device_class: power
+    accuracy_decimals: 0

@@ -1,103 +1,168 @@
+# Everything the simulator needs and the controller must not have.
+#
+# Two kinds of thing live here, and the split in this file follows it:
+#   PLANT — the installation around the controller: bank, PV, loads, and the
+#           Deye that decides when to ask for the genset.
+#   VIEW  — how the simulator draws and sounds: gauges, diagram layout, labels.
+#
+# state-machine.yaml is the part that could be flashed. This file could not,
+# and nothing in here may become an input to a state.
+
 name: Installation — the world the controller sits in
-description: >
-  Separate from state-machine.yaml on purpose. That file is the CONTROLLER:
-  what gets flashed, what acts on contacts. This file is the PLANT around it:
-  the bank, the PV, the loads, and the inverter that decides when to ask for
-  the genset. The controller must know nothing of what is in here — it reads a
-  dry contact and that is all.
-
-  WHY THIS FILE EXISTS. Until now `gen_request` was a free input you toggled by
-  hand. It is not an input at all: it is an OUTPUT of the Deye, computed from
-  battery SOC with hysteresis. Toggling it modelled the wrong layer. The real
-  chain is a feedback loop:
-
-      cells -> BMS (SOC estimate) -> Deye (Start threshold) -> GS contact
-            -> IN-01 -> GENS_ -> genset -> GEN port -> charges the bank -> cells
+description: >-
+  gen_request is not a free input. It is an OUTPUT of the Deye, computed from
+  battery SOC with hysteresis, and the chain closes a loop:
+  cells -> BMS -> Deye (Start threshold) -> GS contact -> IN-01 -> GENS_
+  -> genset -> GEN port -> charges the bank -> cells.
 
 # =====================================================================
-#  HARDWARE — figures from the installation, not invented
+#  PLANT — figures from the installation, not invented
 # =====================================================================
 bank:
   capacity_kwh: 16.1
   nominal_v: 51.2
   note: ONVOLT, 16 x 314 Ah Welion Semi Solid, JK BMS 200 A
   caveat: >-
-    SOC is modelled over the full capacity. The real bank is a LiFePO4 pack
-    whose usable window is narrower, and whose SOC comes from a BMS ESTIMATOR
-    that needs several full cycles to calibrate. Treat displayed SOC as the
-    number the Deye sees, not as the energy actually left.
+    SOC is modelled over the full capacity. The real pack has a narrower usable
+    window and its SOC comes from a BMS ESTIMATOR that needs several full cycles
+    to calibrate. Treat displayed SOC as the number the Deye sees.
 
 pv:
   kwp: 4.32
   note: 8 x JA Solar JAM72D30-540/MB, bifacial, on the barn
-
-genset:
-  kw_gas: 3.5
-  kw_petrol: 5.6
-  note: >-
-    FOGO FH9000R. 5.6 kW on petrol, about 3.5 kW on water gas after the
-    30-40 % derate. The gas figure is the one that matters in service.
 
 loads:
   base_kw: 0.5
   shower_kw: 9.0
   shower_minutes: 8
   note: >-
-    0.5 kW is 12 kWh/day averaged out. The shower is the PPE3 at its 9 kW
-    setting — the binding constraint of the whole installation, and the reason
-    the microswitches must be moved off 15 kW before the first island run.
+    0.5 kW is 12 kWh/day averaged out. The shower is the PPE3 at 9 kW — the
+    binding constraint of the installation, and the reason its microswitches
+    must come off 15 kW before the first island run.
 
-# =====================================================================
-#  DEYE — the device that decides. These are INVERTER SETTINGS, not ours.
-# =====================================================================
+genset:
+  model: FOGO FH9000R
+  datasheet: https://www.fogo.pl/fh-9000-r
+  engine: Honda GX390
+  kw_gas: 3.5
+  kw_petrol: 5.6
+  note: >-
+    8.5 kVA, 400/230 V three-phase, AVR. About 3.5 kW on water gas after the
+    30-40 % derate; the gas figure is the one that matters in service. Electric
+    starter, relay start input and battery are retrofits — the vendor page does
+    not list them, which is why the start signal has to be a wire.
+
+controller:
+  model: SMARTBOB SM-MINI-0808R
+  datasheet: https://smartbob.pl/produkt/sm-mini-0808r/
+  documentation: https://smartbobautomatyka.github.io/SmartbobPageWiki/
+  templates: https://github.com/SmartbobAutomatyka/SmartbobAutomatyka-GIT/tree/main/ESPHOME/SM-MINI-0808R-V17
+  pinout: https://docs.google.com/spreadsheets/d/1f-NrrFuqd2Pu4SJJxyYbYXiO_AjEefHKa8IfUKU8CmM/edit?gid=1302523101
+
+# INVERTER SETTINGS, not ours. Hysteresis is the point: without the 30/80 gap
+# the genset would chatter around the threshold.
 deye:
-  gen_start_soc: 30        # manual default. "Start = 30%": at this SOC the
-                           # normally-open Gen Signal relay closes.
-  gen_stop_soc: 80         # TO BE READ OFF THE DEVICE — the manual states the
-                           # start threshold plainly but not the stop one.
-  # Surplus thresholds that separate PV from PV_CHARGING. Two values, not one,
-  # because a single threshold makes the status flap when PV sits on it.
-  p_surplus_on: 120        # W — above this the surplus is called charging
-  p_surplus_off: 80        # W — below this it is not
-  gen_charge_a: 40         # manual default. At 51.2 V that is about 2.05 kW,
-                           # which is LESS than the 3.5 kW the genset makes.
-                           # Left at the default deliberately: the question of
-                           # what it should be is open and has to be settled on
-                           # the inverter, against what the cells accept through
-                           # the BMS and what the three-phase genset can give.
-                           # The simulator shows the cost: genset load factor.
+  gen_start_soc: 30        # manual default: the NO Gen Signal relay closes here
+  gen_stop_soc: 80         # TO BE READ OFF THE DEVICE — the manual gives start only
+  p_surplus_on: 120        # W — above this the PV surplus counts as charging
+  p_surplus_off: 80        # W — below this it does not (deadband, or the status flaps)
+  gen_charge_a: 40         # manual default; 2.05 kW at 51.2 V, less than the genset makes
   island_mode: true
   contact: GS
   contact_note: >-
-    Which terminal carries the start signal depends on the "Signal ISLAND MODE"
-    setting. Ticked, it is GS; unticked, GV. Island mode is on here, so GS —
-    which matches the G-start (1,2) pair in our wiring. Confirm on the device.
+    Which terminal carries the start signal depends on "Signal ISLAND MODE":
+    ticked GS, unticked GV. Island mode is on here, so GS. Confirm on the device.
 
-# =====================================================================
-#  TIME — two clocks, and why
-#
-#  A full cycle is about 19 hours: roughly 16 h draining the bank and 3 h
-#  charging it. The state machine runs in real seconds (t_crank is 3 s).
-#  One clock cannot serve both.
-#
-#  So the plant clock runs fast while nothing is happening and drops to real
-#  time the moment the controller has something to show. The multiplier is
-#  always displayed — a hidden variable clock is worse than a slow one.
-# =====================================================================
+# Two clocks: a full cycle is ~19 h, while t_attempt is 4 s. The plant clock
+# runs fast while nothing happens and drops to real time when the controller
+# has something to show. The multiplier is always displayed.
 clock:
-  warp: 240                # 1 s of simulation = 4 min of plant, while idle
+  warp: 240                   # 1 s of simulation = 4 min of plant, while idle
   realtime_states: [GENS_CRANKING, GENS_PAUSE, GENS_STOPPING, GENS_FAULT]
-  realtime_on_request: true   # also drop to 1x as soon as the request appears,
-                              # so the request hold and the ready dwell are
-                              # watchable. IN GENS_READY ONLY: the request stays
-                              # asserted for the whole charging run, and without
-                              # that restriction the clock sat at 1x for hours
-                              # of charging and gave back half the benefit.
+  realtime_on_request: true   # and in GENS_READY as soon as the request appears,
+                              # so the hold and the dwell are watchable
+
+# The inverter as a state machine. The contact is closed in DEYE_REQUEST and
+# DEYE_CHARGING, open in the other three.
+states_deye:
+  DEYE_PV:
+    contact: false
+    description: PV covers the loads, no surplus worth speaking of. The bank floats.
+  DEYE_PV_CHARGING:
+    contact: false
+    description: >-
+      PV covers the loads and the surplus charges the bank. Entering needs more
+      than p_surplus_on, leaving less than p_surplus_off.
+  DEYE_DISCHARGING:
+    contact: false
+    description: No surplus, the bank carries the load and SOC falls. Normal at night.
+  DEYE_REQUEST:
+    contact: true
+    description: >-
+      SOC reached the Start threshold, the Gen Signal relay has closed, the Deye
+      waits for voltage on the GEN port. The bank keeps draining meanwhile.
+  DEYE_CHARGING:
+    contact: true
+    description: >-
+      The genset produces and the Deye charges through the GEN port, limited by
+      gen_charge_a. The contact holds until the stop threshold.
 
 # =====================================================================
-#  MEASUREMENTS of the plant, merged with those of the controller.
+#  VIEW — gauges, layout, labels, sound. None of it is an input to a state.
 # =====================================================================
+
+# `model` names the behaviour the simulator implements for each quantity.
 measurements:
+  u_gen:
+    label: Genset phase voltage
+    unit: V
+    min: 0
+    max: 440
+    ok_from: 360
+    ok_to: 420
+    model: gen_voltage
+    description: >-
+      What the voltage monitoring relay on IN-02 measures. Its contact is the
+      only proof the controller has that the engine is producing.
+  t_engine:
+    label: Engine temperature
+    unit: °C
+    min: 0
+    max: 120
+    warn_above: 95
+    alarm_above: 110
+    model: engine_temp
+    description: >-
+      Air-cooled GX390. Below 40 °C is where a choke would be needed — which
+      this controller does not yet have.
+  u_batt:
+    label: Starter battery
+    unit: V
+    min: 8
+    max: 15
+    warn_below: 10.5
+    alarm_below: 9.5
+    model: starter_battery
+    description: >-
+      Sags hard while the starter turns and only partly recovers between
+      attempts. This is why the attempt limit exists.
+  soc:
+    label: Bank SOC
+    unit: "%"
+    min: 0
+    max: 100
+    warn_below: 25
+    model: bank_soc
+    description: >-
+      What the Deye reads from the BMS, register 588. The state machine acts on
+      the G-start contact, never on this number.
+  p_pv:
+    label: PV power
+    unit: W
+    min: 0
+    max: 4500
+    model: pv_power
+    description: 8 x JA Solar JAM72D30-540/MB, 4.32 kWp on the barn.
   p_load:
     label: Island load
     unit: W
@@ -120,49 +185,41 @@ measurements:
     warn_below: 70
     model: plant
     description: >-
-      How much of the genset's output is actually used. The Deye caps charging
-      at gen_charge_a, so with only the base load running the genset can be left
-      at well under full load — which is precisely what a gasifier does not want.
-      This gauge is here to answer that open question with a number.
+      How much of the genset's output is used. The Deye caps charging at
+      gen_charge_a, so with only the base load the genset runs well under full
+      load — which is precisely what a gasifier does not want.
 
-# =====================================================================
-#  DEYE_ — the inverter as a state machine. The contact is closed in
-#  DEYE_REQUEST and DEYE_CHARGING, open in the other two.
-#
-#  THE HYSTERESIS IS THE POINT. Start 30 %, stop 80 %. Without the gap the
-#  genset would chatter around the threshold — the same class of defect as the
-#  two clocks in the start logic, and just as invisible until it is drawn.
-# =====================================================================
-states_deye:
-  DEYE_PV:
-    description: >-
-      PV covers the loads, but with no surplus worth speaking of: the bank is
-      floating rather than charging. The genset contact is open.
-    contact: false
-  DEYE_PV_CHARGING:
-    description: >-
-      PV covers the loads AND charges the bank with the surplus. This is where
-      the installation should spend the summer, and it is worth telling apart
-      from bare PV: covering the load is not the same as filling the bank.
-      Entering needs more than p_surplus_on, leaving less than p_surplus_off —
-      a deadband, or the status would flap either side of the threshold.
-    contact: false
-  DEYE_DISCHARGING:
-    description: >-
-      No surplus. The bank carries the load and SOC falls. Still no request —
-      this is normal night-time operation, not a fault. Named to pair with
-      DEYE_CHARGING: the two are the same quantity with opposite sign.
-    contact: false
-  DEYE_REQUEST:
-    description: >-
-      SOC reached the Start threshold, the normally-open Gen Signal relay has
-      closed, and the Deye is waiting for voltage on the GEN port. The bank
-      keeps draining in the meantime: asking is not the same as being helped.
-    contact: true
-  DEYE_CHARGING:
-    description: >-
-      The genset is producing and the Deye is charging the bank through the GEN
-      port, current-limited by gen_charge_a. The contact stays closed until the
-      stop threshold, because releasing it at the start threshold would stop the
-      genset the instant it began to help.
-    contact: true
+# Energy chain in the synoptic bar, left to right. Causal order, and it closes:
+# the phase the genset produces goes back into the bank that asked for it.
+synoptic:
+  - { id: pv,      label: PV }
+  - { id: load,    label: load }
+  - { id: bank,    label: bank }
+  - { id: deye,    label: Deye }
+  - { id: request, label: GS contact }
+  - { id: engine,  label: engine }
+  - { id: phase,   label: phase }
+
+# State diagram, [x, y] in the SVG. Process order left to right, failure row
+# underneath.
+layout:
+  GENS_READY:    [ 70,  40]
+  GENS_CRANKING: [300,  40]
+  GENS_RUNNING:  [530,  40]
+  GENS_PAUSE:    [300, 170]
+  GENS_STOPPING: [530, 170]
+  GENS_FAULT:    [ 70, 170]
+
+# Which signal makes which sound. Declared here, not wired into the simulator:
+# the gasifier blower gets a voice by adding one line and one file.
+# `loop` plays while the signal is on, `up` and `down` fire on its edges.
+# Not `on`/`off` as key names: YAML parses both as booleans.
+sounds:
+  running: { loop: engine, up: engine-start, down: engine-stop }
+  starter: { loop: starter }
+
+# External hardware a signal depends on, linked from the input panel.
+devices:
+  running:
+    name: e.g. Relpol RPN-.VF-A400
+    url: https://www.relpol.pl/Produkty/Przekazniki-nadzorcze/Przekazniki-nadzorcze-modulowe/Przekazniki-nadzorcze-RPN-.VF-A400

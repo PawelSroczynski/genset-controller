@@ -1,251 +1,90 @@
+# The state machine of the genset controller, and nothing else.
+#
+# What is NOT here, on purpose: datasheets, gauges, diagram coordinates,
+# sounds, the plant around the controller. Those are in plant.yaml, which the
+# simulator reads as well. This file is the part that describes control, so it
+# is the part that has to stay readable when the gasifier and the retort are
+# added next to it.
+#
+# Every "why" belongs in README.md, not in a comment here.
+
 name: Genset controller FOGO FH9000R — SMARTBOB SM-MINI-0808R
-description: >
-  Models the GENSET ONLY. Reads the Deye G-start dry contact, cranks with an
-  attempt limit, stops the engine by shorting the ignition to ground once the
-  signal drops. No gasifier here — no blower, no gas valve, no bed state.
-  A cycle opens on the Deye signal and closes on the return to ready.
-
-  NAMING CONVENTION: states in this layer carry the GENS_ prefix (aggregate).
-  Further layers get their own: GAZ_ for the gasifier, RET_ for the retort.
-  Without it GENS_RUNNING and GAZ_RUNNING would collide once the machines
-  stand side by side — a running engine and a reactor producing gas are not
-  the same state.
-
-genset:
-  model: FOGO FH9000R
-  datasheet: https://www.fogo.pl/fh-9000-r
-  engine: Honda GX390
-  note: >-
-    8.5 kVA, 400/230 V three-phase, AVR on all three phases. The electric
-    starter, the relay start input and the battery are retrofits — the vendor
-    page does not list them, which is why the start signal has to be wired
-    rather than requested over a bus.
-
-controller:
-  model: SMARTBOB SM-MINI-0808R
-  datasheet: https://smartbob.pl/produkt/sm-mini-0808r/
-  documentation: https://smartbobautomatyka.github.io/SmartbobPageWiki/
-  templates: https://github.com/SmartbobAutomatyka/SmartbobAutomatyka-GIT/tree/main/ESPHOME/SM-MINI-0808R-V17
-  pinout: https://docs.google.com/spreadsheets/d/1f-NrrFuqd2Pu4SJJxyYbYXiO_AjEefHKa8IfUKU8CmM/edit?gid=1302523101
+description: >-
+  Models the genset only: reads the Deye G-start contact, cranks with an attempt
+  limit, stops the engine by shorting the ignition to ground. States carry the
+  GENS_ prefix, so the gasifier (GAZ_) and the retort (RET_) can stand beside
+  them without colliding.
 
 parameters:
-  # The Deye request must be continuously ON for this long before the logic
-  # accepts it. It lives in the INPUT FILTER, not in a state: holding a signal
-  # is signal conditioning, and a state timer cannot express it — a state timer
-  # measures time in the state, which has already elapsed while the controller
-  # sat idle. Same thing as `delayed_on` on the ESPHome binary_sensor.
-  t_request_hold: 5      # s
-  # Minimum dwell in GENS_READY after a closed cycle or a fault reset, so the
-  # controller never cranks again the instant the engine has stopped.
-  # This one is correctly measured as time in the state.
-  t_ready: 5             # s
-  # Ignition must be live BEFORE the starter turns the engine over, or the first
-  # compression strokes can happen while the interposing relay is still settling
-  # — the engine turned without spark, battery spent, one attempt wasted.
-  # This is a property of the OUTPUT, not a state: see `delay_on` on the starter.
-  # Same reasoning as the request hold, which lives in the input filter rather
-  # than in a state timer.
-  t_prestart: 1          # s — ignition live before the starter is energised
-  # Whole attempt window: t_prestart of ignition settling plus the cranking
-  # itself, so the starter still turns for three seconds.
-  t_attempt: 4           # s
+  t_request_hold: 5      # s — request must be held this long (input filter)
+  t_ready: 5             # s — minimum dwell in GENS_READY (state timer)
+  t_prestart: 1          # s — ignition live before the starter (output delay)
+  t_attempt: 4           # s — whole attempt window, t_prestart included
   t_pause: 10            # s — starter rest between attempts
   attempts_max: 3
   t_rundown: 10          # s — time allowed for the engine to come to a stop
-  # How long the ignition is held shorted to ground when stopping. A button is
-  # not enough: a single-cylinder engine can ride through a brief short and keep
-  # running, so the duration cannot depend on how long somebody holds a button.
-  # The relay holds it, and the state machine holds the relay.
-  t_kill: 3              # s
+  t_kill: 3              # s — how long the kill short is held
 
 counters:
   attempts: 0
-
-# =====================================================================
-#  MEASUREMENTS — analogue quantities the simulator models and displays.
-#
-#  None of these is an input to the state machine. They exist because a state
-#  name alone does not tell you whether the plant is healthy, and because two
-#  of them explain limits that otherwise look arbitrary:
-#  `u_gen` is the quantity the IN-02 voltage relay actually watches, and
-#  `u_batt` is why cranking has an attempt budget at all.
-#
-#  `model` names the behaviour the simulator implements for each one.
-# =====================================================================
-measurements:
-  u_gen:
-    label: Genset phase voltage
-    unit: V
-    min: 0
-    max: 440
-    ok_from: 360
-    ok_to: 420
-    model: gen_voltage
-    description: >-
-      What the DIN-rail voltage monitoring relay on IN-02 measures. The relay
-      closes its contact inside the working window, and that contact is the
-      only proof the controller has that the engine is actually producing.
-  t_engine:
-    label: Engine temperature
-    unit: °C
-    min: 0
-    max: 120
-    warn_above: 95
-    alarm_above: 110
-    model: engine_temp
-    description: >-
-      Air-cooled GX390. Climbs under load, falls when stopped. Below 40 °C is
-      where a choke would be needed — which this controller does not yet have.
-  u_batt:
-    label: Starter battery
-    unit: V
-    min: 8
-    max: 15
-    warn_below: 10.5
-    alarm_below: 9.5
-    model: starter_battery
-    description: >-
-      Sags hard while the starter turns and only partly recovers between
-      attempts. THIS IS WHY THE ATTEMPT LIMIT EXISTS: three attempts is a
-      budget, not a formality. Watch it fall across a failed start cycle.
-  soc:
-    label: Bank SOC
-    unit: "%"
-    min: 0
-    max: 100
-    warn_below: 25
-    model: bank_soc
-    description: >-
-      Read from the Deye over Modbus, register 588. Falls on island load,
-      rises while the genset charges. Informational only — the state machine
-      acts on the G-start contact, not on SOC.
-  p_pv:
-    label: PV power
-    unit: W
-    min: 0
-    max: 4500
-    model: pv_power
-    description: 8 x JA Solar JAM72D30-540/MB, 4.32 kWp on the barn.
-
-# Energy chain shown in the synoptic bar, left to right.
-# The chain now reads in causal order and closes a loop: the phase the genset
-# produces goes back into the bank, which is what asks for it in the first place.
-synoptic:
-  - { id: pv,      label: PV }
-  - { id: load,    label: load }
-  - { id: bank,    label: bank }
-  - { id: deye,    label: Deye }
-  - { id: request, label: GS contact }
-  - { id: engine,  label: engine }
-  - { id: phase,   label: phase }
 
 inputs:
   gen_request:
     pin: IN-01
     label: Deye start signal
-    description: >-
-      G-start dry contact, inverter terminals 1 and 2.
-      ON = genset run requested. OFF = no request.
-      The logic sees this input only after it has been held for
-      {t_request_hold} s; dropping it is immediate. Asymmetric on purpose —
-      a transient request must not start the engine, but a withdrawn request
-      must stop the cranking at once.
     hold: t_request_hold
+    description: G-start dry contact, inverter terminals 1 and 2. ON = run requested.
   running:
     pin: IN-02
     label: Run confirmed
-    sound_loop: engine          # pracujący silnik, dopóki potwierdzenie trwa
-    sound_on: engine-start      # kręcenie, zapłon, narost obrotów
-    sound_off: engine-stop      # obroty siadają, na końcu klaknięcie zaworów
     description: >-
-      External DIN-rail voltage monitoring relay wired to the genset output
-      phase. Its dry contact feeds IN-02.
-      ON = voltage within the working window, i.e. the genset is producing.
-    device:
-      name: e.g. Relpol RPN-.VF-A400
-      url: https://www.relpol.pl/Produkty/Przekazniki-nadzorcze/Przekazniki-nadzorcze-modulowe/Przekazniki-nadzorcze-RPN-.VF-A400
+      Dry contact of an external voltage monitoring relay on the genset output
+      phase. ON = voltage within the working window, i.e. the genset produces.
   co_alarm:
     pin: IN-03
     label: CO alarm
-    description: >-
-      Alarm contact of the carbon monoxide detector in the plant room, on IN-03.
-      ON = carbon monoxide detected. The detector needs a second contact for
-      the hardwired permit chain, which stops the engine independently of
-      the controller.
+    description: Alarm contact of the carbon monoxide detector. ON = CO detected.
   kill_btn:
     pin: IN-05
     label: Kill button
-    description: >-
-      Momentary pushbutton in the cabinet door. It is a REQUEST, not the kill
-      itself: pressing it sends the machine to GENS_STOPPING, which energises
-      the kill relay and holds the short for {t_kill} s regardless of how long
-      the button was held. Wiring the button straight into the ignition line
-      means a short press leaves the engine running.
     momentary: true
-
+    description: >-
+      Momentary pushbutton. A request, not the kill itself: it sends the machine
+      to GENS_STOPPING, which holds the short for t_kill however briefly it was
+      pressed.
   reset:
     pin: IN-04
     label: Fault reset
-    description: >-
-      Momentary pushbutton in the cabinet door, on IN-04.
-      ON = pressed. Returns to OFF on release.
     momentary: true
+    description: Momentary pushbutton. Clears GENS_FAULT when nothing blocks it.
 
 outputs:
   ignition:
     pin: RELAY-01
     label: Ignition relay
-    # `short` is what the indicator board shows. The board has to hold ten or
-    # more relays once the gasifier and the retort arrive, so the row is one
-    # line and the full label lives in the tooltip.
-    short: IGNITION
     description: >-
-      ON = the NC contact in the kill line is open, ignition circuit live.
-      OFF = ignition shorted to ground, engine stopped.
+      Energise-to-run. ON = the NC contact in the kill line is open, ignition
+      live. OFF = ignition shorted to ground, engine stopped.
   starter:
     pin: RELAY-02
     label: Starter relay
-    short: STARTER
-    # Energising is held off this long after the state asks for it; dropping is
-    # immediate. The ignition relay closes first and settles, then the starter
-    # turns. Asymmetric for the same reason the request filter is.
     delay_on: t_prestart
-    # Dźwięk deklarowany w danych, nie wpisany w kod symulatora: `sound_loop`
-    # gra, dopóki sygnał jest aktywny. Dzięki temu dmuchawa gazogeneratora
-    # dostanie swój głos przez dopisanie jednej linii i pliku.
-    sound_loop: starter
     description: >-
-      Drives the starter contactor coil; it does not feed the starter directly.
-      ON = contactor closed, starter cranking. OFF = contactor open.
-
+      Drives the starter contactor coil. Energising waits t_prestart after the
+      state asks for it; dropping is immediate.
   kill:
     pin: RELAY-03
     label: Kill relay
-    short: KILL
     description: >-
-      ENERGISE-TO-STOP, and deliberately the opposite polarity to the ignition
-      relay. Energised, its contact shorts the ignition to ground: a positive,
-      timed kill. It is NOT the inverse of the ignition relay — it is energised
-      only while the engine is being stopped and in a fault, not while idle.
-      When idle the NC contact of the de-energised ignition relay already holds
-      the short, and keeping a second coil energised for hours would waste power
-      and wear it for nothing.
-      The two paths are independent on purpose: one fails safe on loss of power,
-      the other acts positively on command.
+      Energise-to-stop, the opposite polarity to the ignition relay and not its
+      inverse: energised only while stopping and in a fault.
 
 states:
   GENS_READY:
-    x: 70
-    y: 40
     description: >-
-      Controller powered, outputs in the safe state. Kill line shorted to
-      ground. Two independent conditions gate the start, on two different
-      clocks: the request must have been held {t_request_hold} s (input filter)
-      AND the controller must have been in this state {t_ready} s (state timer).
-      The second one matters only right after a cycle or a fault reset; once
-      the controller has stood idle it is long satisfied, and that is correct —
-      a rested engine needs no dwell. The `not running` term blocks the start
-      if the engine is somehow still turning.
+      Outputs in the safe state, kill line shorted to ground. The start needs
+      the request held t_request_hold s and this state held t_ready s — two
+      conditions on two different clocks.
     outputs: { ignition: false, starter: false, kill: false }
     actions: { attempts: 0 }
     transitions:
@@ -253,9 +92,8 @@ states:
         when: gen_request and not co_alarm and not running
         after: t_ready
         description: Request {t_request_hold} s, dwell {t_ready} s — crank
+
   GENS_CRANKING:
-    x: 300
-    y: 40
     description: Starter engaged. The time limit protects the bendix.
     outputs: { ignition: true, starter: true, kill: false }
     transitions:
@@ -280,9 +118,8 @@ states:
         after: t_attempt
         actions: { attempts: "+1" }
         description: "Attempt {attempts}/{attempts_max} failed — pause {t_pause} s"
+
   GENS_PAUSE:
-    x: 300
-    y: 170
     description: Starter thermal rest before the next attempt.
     outputs: { ignition: true, starter: false, kill: false }
     transitions:
@@ -301,9 +138,8 @@ states:
       - to: GENS_CRANKING
         after: t_pause
         description: "Pause {t_pause} s elapsed — next attempt"
+
   GENS_RUNNING:
-    x: 530
-    y: 40
     description: Engine running, inverter charging the bank.
     outputs: { ignition: true, starter: false, kill: false }
     transitions:
@@ -319,15 +155,11 @@ states:
       - to: GENS_STOPPING
         when: not gen_request
         description: Deye signal lost
+
   GENS_STOPPING:
-    x: 530
-    y: 170
-    description: Ignition relay OFF — the NC contact shorts the ignition to ground.
+    description: Ignition shorted to ground by both relays, engine coming to a stop.
     outputs: { ignition: false, starter: false, kill: true }
     transitions:
-      # OBA warunki. Zwolnienie w chwili, gdy silnik przestaje się kręcić,
-      # czyniłoby gaszenie tak krótkim jak naciśnięcie, które o nie poprosiło —
-      # a po to ten przekaźnik istnieje, żeby tego uniknąć.
       - to: GENS_READY
         when: not running
         after: t_kill
@@ -335,13 +167,12 @@ states:
       - to: GENS_FAULT
         after: t_rundown
         description: "Run confirmation held {t_rundown} s — kill circuit fault"
+
   GENS_FAULT:
-    x: 70
-    y: 170
     fault: true
     description: >-
-      Ignition relay OFF. Requires a manual reset. Resetting is blocked while
-      run confirmation persists — that would mean a defective kill circuit.
+      Ignition off, manual reset required. The reset is blocked while run
+      confirmation persists — that would mean a defective kill circuit.
     outputs: { ignition: false, starter: false, kill: true }
     transitions:
       - to: GENS_READY

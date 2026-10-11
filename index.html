@@ -7,254 +7,93 @@
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%231A2332'/><text x='16' y='23' text-anchor='middle' font-family='sans-serif' font-size='18' font-weight='700' fill='%23F7A800'>⚙</text></svg>">
 <script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
 <script id="defaultYaml" type="text/yaml">
+# The state machine of the genset controller, and nothing else.
+#
+# What is NOT here, on purpose: datasheets, gauges, diagram coordinates,
+# sounds, the plant around the controller. Those are in plant.yaml, which the
+# simulator reads as well. This file is the part that describes control, so it
+# is the part that has to stay readable when the gasifier and the retort are
+# added next to it.
+#
+# Every "why" belongs in README.md, not in a comment here.
+
 name: Genset controller FOGO FH9000R — SMARTBOB SM-MINI-0808R
-description: >
-  Models the GENSET ONLY. Reads the Deye G-start dry contact, cranks with an
-  attempt limit, stops the engine by shorting the ignition to ground once the
-  signal drops. No gasifier here — no blower, no gas valve, no bed state.
-  A cycle opens on the Deye signal and closes on the return to ready.
-
-  NAMING CONVENTION: states in this layer carry the GENS_ prefix (aggregate).
-  Further layers get their own: GAZ_ for the gasifier, RET_ for the retort.
-  Without it GENS_RUNNING and GAZ_RUNNING would collide once the machines
-  stand side by side — a running engine and a reactor producing gas are not
-  the same state.
-
-genset:
-  model: FOGO FH9000R
-  datasheet: https://www.fogo.pl/fh-9000-r
-  engine: Honda GX390
-  note: >-
-    8.5 kVA, 400/230 V three-phase, AVR on all three phases. The electric
-    starter, the relay start input and the battery are retrofits — the vendor
-    page does not list them, which is why the start signal has to be wired
-    rather than requested over a bus.
-
-controller:
-  model: SMARTBOB SM-MINI-0808R
-  datasheet: https://smartbob.pl/produkt/sm-mini-0808r/
-  documentation: https://smartbobautomatyka.github.io/SmartbobPageWiki/
-  templates: https://github.com/SmartbobAutomatyka/SmartbobAutomatyka-GIT/tree/main/ESPHOME/SM-MINI-0808R-V17
-  pinout: https://docs.google.com/spreadsheets/d/1f-NrrFuqd2Pu4SJJxyYbYXiO_AjEefHKa8IfUKU8CmM/edit?gid=1302523101
+description: >-
+  Models the genset only: reads the Deye G-start contact, cranks with an attempt
+  limit, stops the engine by shorting the ignition to ground. States carry the
+  GENS_ prefix, so the gasifier (GAZ_) and the retort (RET_) can stand beside
+  them without colliding.
 
 parameters:
-  # The Deye request must be continuously ON for this long before the logic
-  # accepts it. It lives in the INPUT FILTER, not in a state: holding a signal
-  # is signal conditioning, and a state timer cannot express it — a state timer
-  # measures time in the state, which has already elapsed while the controller
-  # sat idle. Same thing as `delayed_on` on the ESPHome binary_sensor.
-  t_request_hold: 5      # s
-  # Minimum dwell in GENS_READY after a closed cycle or a fault reset, so the
-  # controller never cranks again the instant the engine has stopped.
-  # This one is correctly measured as time in the state.
-  t_ready: 5             # s
-  # Ignition must be live BEFORE the starter turns the engine over, or the first
-  # compression strokes can happen while the interposing relay is still settling
-  # — the engine turned without spark, battery spent, one attempt wasted.
-  # This is a property of the OUTPUT, not a state: see `delay_on` on the starter.
-  # Same reasoning as the request hold, which lives in the input filter rather
-  # than in a state timer.
-  t_prestart: 1          # s — ignition live before the starter is energised
-  # Whole attempt window: t_prestart of ignition settling plus the cranking
-  # itself, so the starter still turns for three seconds.
-  t_attempt: 4           # s
+  t_request_hold: 5      # s — request must be held this long (input filter)
+  t_ready: 5             # s — minimum dwell in GENS_READY (state timer)
+  t_prestart: 1          # s — ignition live before the starter (output delay)
+  t_attempt: 4           # s — whole attempt window, t_prestart included
   t_pause: 10            # s — starter rest between attempts
   attempts_max: 3
   t_rundown: 10          # s — time allowed for the engine to come to a stop
-  # How long the ignition is held shorted to ground when stopping. A button is
-  # not enough: a single-cylinder engine can ride through a brief short and keep
-  # running, so the duration cannot depend on how long somebody holds a button.
-  # The relay holds it, and the state machine holds the relay.
-  t_kill: 3              # s
+  t_kill: 3              # s — how long the kill short is held
 
 counters:
   attempts: 0
-
-# =====================================================================
-#  MEASUREMENTS — analogue quantities the simulator models and displays.
-#
-#  None of these is an input to the state machine. They exist because a state
-#  name alone does not tell you whether the plant is healthy, and because two
-#  of them explain limits that otherwise look arbitrary:
-#  `u_gen` is the quantity the IN-02 voltage relay actually watches, and
-#  `u_batt` is why cranking has an attempt budget at all.
-#
-#  `model` names the behaviour the simulator implements for each one.
-# =====================================================================
-measurements:
-  u_gen:
-    label: Genset phase voltage
-    unit: V
-    min: 0
-    max: 440
-    ok_from: 360
-    ok_to: 420
-    model: gen_voltage
-    description: >-
-      What the DIN-rail voltage monitoring relay on IN-02 measures. The relay
-      closes its contact inside the working window, and that contact is the
-      only proof the controller has that the engine is actually producing.
-  t_engine:
-    label: Engine temperature
-    unit: °C
-    min: 0
-    max: 120
-    warn_above: 95
-    alarm_above: 110
-    model: engine_temp
-    description: >-
-      Air-cooled GX390. Climbs under load, falls when stopped. Below 40 °C is
-      where a choke would be needed — which this controller does not yet have.
-  u_batt:
-    label: Starter battery
-    unit: V
-    min: 8
-    max: 15
-    warn_below: 10.5
-    alarm_below: 9.5
-    model: starter_battery
-    description: >-
-      Sags hard while the starter turns and only partly recovers between
-      attempts. THIS IS WHY THE ATTEMPT LIMIT EXISTS: three attempts is a
-      budget, not a formality. Watch it fall across a failed start cycle.
-  soc:
-    label: Bank SOC
-    unit: "%"
-    min: 0
-    max: 100
-    warn_below: 25
-    model: bank_soc
-    description: >-
-      Read from the Deye over Modbus, register 588. Falls on island load,
-      rises while the genset charges. Informational only — the state machine
-      acts on the G-start contact, not on SOC.
-  p_pv:
-    label: PV power
-    unit: W
-    min: 0
-    max: 4500
-    model: pv_power
-    description: 8 x JA Solar JAM72D30-540/MB, 4.32 kWp on the barn.
-
-# Energy chain shown in the synoptic bar, left to right.
-# The chain now reads in causal order and closes a loop: the phase the genset
-# produces goes back into the bank, which is what asks for it in the first place.
-synoptic:
-  - { id: pv,      label: PV }
-  - { id: load,    label: load }
-  - { id: bank,    label: bank }
-  - { id: deye,    label: Deye }
-  - { id: request, label: GS contact }
-  - { id: engine,  label: engine }
-  - { id: phase,   label: phase }
 
 inputs:
   gen_request:
     pin: IN-01
     label: Deye start signal
-    description: >-
-      G-start dry contact, inverter terminals 1 and 2.
-      ON = genset run requested. OFF = no request.
-      The logic sees this input only after it has been held for
-      {t_request_hold} s; dropping it is immediate. Asymmetric on purpose —
-      a transient request must not start the engine, but a withdrawn request
-      must stop the cranking at once.
     hold: t_request_hold
+    description: G-start dry contact, inverter terminals 1 and 2. ON = run requested.
   running:
     pin: IN-02
     label: Run confirmed
-    sound_loop: engine          # pracujący silnik, dopóki potwierdzenie trwa
-    sound_on: engine-start      # kręcenie, zapłon, narost obrotów
-    sound_off: engine-stop      # obroty siadają, na końcu klaknięcie zaworów
     description: >-
-      External DIN-rail voltage monitoring relay wired to the genset output
-      phase. Its dry contact feeds IN-02.
-      ON = voltage within the working window, i.e. the genset is producing.
-    device:
-      name: e.g. Relpol RPN-.VF-A400
-      url: https://www.relpol.pl/Produkty/Przekazniki-nadzorcze/Przekazniki-nadzorcze-modulowe/Przekazniki-nadzorcze-RPN-.VF-A400
+      Dry contact of an external voltage monitoring relay on the genset output
+      phase. ON = voltage within the working window, i.e. the genset produces.
   co_alarm:
     pin: IN-03
     label: CO alarm
-    description: >-
-      Alarm contact of the carbon monoxide detector in the plant room, on IN-03.
-      ON = carbon monoxide detected. The detector needs a second contact for
-      the hardwired permit chain, which stops the engine independently of
-      the controller.
+    description: Alarm contact of the carbon monoxide detector. ON = CO detected.
   kill_btn:
     pin: IN-05
     label: Kill button
-    description: >-
-      Momentary pushbutton in the cabinet door. It is a REQUEST, not the kill
-      itself: pressing it sends the machine to GENS_STOPPING, which energises
-      the kill relay and holds the short for {t_kill} s regardless of how long
-      the button was held. Wiring the button straight into the ignition line
-      means a short press leaves the engine running.
     momentary: true
-
+    description: >-
+      Momentary pushbutton. A request, not the kill itself: it sends the machine
+      to GENS_STOPPING, which holds the short for t_kill however briefly it was
+      pressed.
   reset:
     pin: IN-04
     label: Fault reset
-    description: >-
-      Momentary pushbutton in the cabinet door, on IN-04.
-      ON = pressed. Returns to OFF on release.
     momentary: true
+    description: Momentary pushbutton. Clears GENS_FAULT when nothing blocks it.
 
 outputs:
   ignition:
     pin: RELAY-01
     label: Ignition relay
-    # `short` is what the indicator board shows. The board has to hold ten or
-    # more relays once the gasifier and the retort arrive, so the row is one
-    # line and the full label lives in the tooltip.
-    short: IGNITION
     description: >-
-      ON = the NC contact in the kill line is open, ignition circuit live.
-      OFF = ignition shorted to ground, engine stopped.
+      Energise-to-run. ON = the NC contact in the kill line is open, ignition
+      live. OFF = ignition shorted to ground, engine stopped.
   starter:
     pin: RELAY-02
     label: Starter relay
-    short: STARTER
-    # Energising is held off this long after the state asks for it; dropping is
-    # immediate. The ignition relay closes first and settles, then the starter
-    # turns. Asymmetric for the same reason the request filter is.
     delay_on: t_prestart
-    # Dźwięk deklarowany w danych, nie wpisany w kod symulatora: `sound_loop`
-    # gra, dopóki sygnał jest aktywny. Dzięki temu dmuchawa gazogeneratora
-    # dostanie swój głos przez dopisanie jednej linii i pliku.
-    sound_loop: starter
     description: >-
-      Drives the starter contactor coil; it does not feed the starter directly.
-      ON = contactor closed, starter cranking. OFF = contactor open.
-
+      Drives the starter contactor coil. Energising waits t_prestart after the
+      state asks for it; dropping is immediate.
   kill:
     pin: RELAY-03
     label: Kill relay
-    short: KILL
     description: >-
-      ENERGISE-TO-STOP, and deliberately the opposite polarity to the ignition
-      relay. Energised, its contact shorts the ignition to ground: a positive,
-      timed kill. It is NOT the inverse of the ignition relay — it is energised
-      only while the engine is being stopped and in a fault, not while idle.
-      When idle the NC contact of the de-energised ignition relay already holds
-      the short, and keeping a second coil energised for hours would waste power
-      and wear it for nothing.
-      The two paths are independent on purpose: one fails safe on loss of power,
-      the other acts positively on command.
+      Energise-to-stop, the opposite polarity to the ignition relay and not its
+      inverse: energised only while stopping and in a fault.
 
 states:
   GENS_READY:
-    x: 70
-    y: 40
     description: >-
-      Controller powered, outputs in the safe state. Kill line shorted to
-      ground. Two independent conditions gate the start, on two different
-      clocks: the request must have been held {t_request_hold} s (input filter)
-      AND the controller must have been in this state {t_ready} s (state timer).
-      The second one matters only right after a cycle or a fault reset; once
-      the controller has stood idle it is long satisfied, and that is correct —
-      a rested engine needs no dwell. The `not running` term blocks the start
-      if the engine is somehow still turning.
+      Outputs in the safe state, kill line shorted to ground. The start needs
+      the request held t_request_hold s and this state held t_ready s — two
+      conditions on two different clocks.
     outputs: { ignition: false, starter: false, kill: false }
     actions: { attempts: 0 }
     transitions:
@@ -262,9 +101,8 @@ states:
         when: gen_request and not co_alarm and not running
         after: t_ready
         description: Request {t_request_hold} s, dwell {t_ready} s — crank
+
   GENS_CRANKING:
-    x: 300
-    y: 40
     description: Starter engaged. The time limit protects the bendix.
     outputs: { ignition: true, starter: true, kill: false }
     transitions:
@@ -289,9 +127,8 @@ states:
         after: t_attempt
         actions: { attempts: "+1" }
         description: "Attempt {attempts}/{attempts_max} failed — pause {t_pause} s"
+
   GENS_PAUSE:
-    x: 300
-    y: 170
     description: Starter thermal rest before the next attempt.
     outputs: { ignition: true, starter: false, kill: false }
     transitions:
@@ -310,9 +147,8 @@ states:
       - to: GENS_CRANKING
         after: t_pause
         description: "Pause {t_pause} s elapsed — next attempt"
+
   GENS_RUNNING:
-    x: 530
-    y: 40
     description: Engine running, inverter charging the bank.
     outputs: { ignition: true, starter: false, kill: false }
     transitions:
@@ -328,15 +164,11 @@ states:
       - to: GENS_STOPPING
         when: not gen_request
         description: Deye signal lost
+
   GENS_STOPPING:
-    x: 530
-    y: 170
-    description: Ignition relay OFF — the NC contact shorts the ignition to ground.
+    description: Ignition shorted to ground by both relays, engine coming to a stop.
     outputs: { ignition: false, starter: false, kill: true }
     transitions:
-      # OBA warunki. Zwolnienie w chwili, gdy silnik przestaje się kręcić,
-      # czyniłoby gaszenie tak krótkim jak naciśnięcie, które o nie poprosiło —
-      # a po to ten przekaźnik istnieje, żeby tego uniknąć.
       - to: GENS_READY
         when: not running
         after: t_kill
@@ -344,13 +176,12 @@ states:
       - to: GENS_FAULT
         after: t_rundown
         description: "Run confirmation held {t_rundown} s — kill circuit fault"
+
   GENS_FAULT:
-    x: 70
-    y: 170
     fault: true
     description: >-
-      Ignition relay OFF. Requires a manual reset. Resetting is blocked while
-      run confirmation persists — that would mean a defective kill circuit.
+      Ignition off, manual reset required. The reset is blocked while run
+      confirmation persists — that would mean a defective kill circuit.
     outputs: { ignition: false, starter: false, kill: true }
     transitions:
       - to: GENS_READY
@@ -358,106 +189,171 @@ states:
         description: Fault reset
 </script>
 <script id="plantYaml" type="text/yaml">
+# Everything the simulator needs and the controller must not have.
+#
+# Two kinds of thing live here, and the split in this file follows it:
+#   PLANT — the installation around the controller: bank, PV, loads, and the
+#           Deye that decides when to ask for the genset.
+#   VIEW  — how the simulator draws and sounds: gauges, diagram layout, labels.
+#
+# state-machine.yaml is the part that could be flashed. This file could not,
+# and nothing in here may become an input to a state.
+
 name: Installation — the world the controller sits in
-description: >
-  Separate from state-machine.yaml on purpose. That file is the CONTROLLER:
-  what gets flashed, what acts on contacts. This file is the PLANT around it:
-  the bank, the PV, the loads, and the inverter that decides when to ask for
-  the genset. The controller must know nothing of what is in here — it reads a
-  dry contact and that is all.
-
-  WHY THIS FILE EXISTS. Until now `gen_request` was a free input you toggled by
-  hand. It is not an input at all: it is an OUTPUT of the Deye, computed from
-  battery SOC with hysteresis. Toggling it modelled the wrong layer. The real
-  chain is a feedback loop:
-
-      cells -> BMS (SOC estimate) -> Deye (Start threshold) -> GS contact
-            -> IN-01 -> GENS_ -> genset -> GEN port -> charges the bank -> cells
+description: >-
+  gen_request is not a free input. It is an OUTPUT of the Deye, computed from
+  battery SOC with hysteresis, and the chain closes a loop:
+  cells -> BMS -> Deye (Start threshold) -> GS contact -> IN-01 -> GENS_
+  -> genset -> GEN port -> charges the bank -> cells.
 
 # =====================================================================
-#  HARDWARE — figures from the installation, not invented
+#  PLANT — figures from the installation, not invented
 # =====================================================================
 bank:
   capacity_kwh: 16.1
   nominal_v: 51.2
   note: ONVOLT, 16 x 314 Ah Welion Semi Solid, JK BMS 200 A
   caveat: >-
-    SOC is modelled over the full capacity. The real bank is a LiFePO4 pack
-    whose usable window is narrower, and whose SOC comes from a BMS ESTIMATOR
-    that needs several full cycles to calibrate. Treat displayed SOC as the
-    number the Deye sees, not as the energy actually left.
+    SOC is modelled over the full capacity. The real pack has a narrower usable
+    window and its SOC comes from a BMS ESTIMATOR that needs several full cycles
+    to calibrate. Treat displayed SOC as the number the Deye sees.
 
 pv:
   kwp: 4.32
   note: 8 x JA Solar JAM72D30-540/MB, bifacial, on the barn
-
-genset:
-  kw_gas: 3.5
-  kw_petrol: 5.6
-  note: >-
-    FOGO FH9000R. 5.6 kW on petrol, about 3.5 kW on water gas after the
-    30-40 % derate. The gas figure is the one that matters in service.
 
 loads:
   base_kw: 0.5
   shower_kw: 9.0
   shower_minutes: 8
   note: >-
-    0.5 kW is 12 kWh/day averaged out. The shower is the PPE3 at its 9 kW
-    setting — the binding constraint of the whole installation, and the reason
-    the microswitches must be moved off 15 kW before the first island run.
+    0.5 kW is 12 kWh/day averaged out. The shower is the PPE3 at 9 kW — the
+    binding constraint of the installation, and the reason its microswitches
+    must come off 15 kW before the first island run.
 
-# =====================================================================
-#  DEYE — the device that decides. These are INVERTER SETTINGS, not ours.
-# =====================================================================
+genset:
+  model: FOGO FH9000R
+  datasheet: https://www.fogo.pl/fh-9000-r
+  engine: Honda GX390
+  kw_gas: 3.5
+  kw_petrol: 5.6
+  note: >-
+    8.5 kVA, 400/230 V three-phase, AVR. About 3.5 kW on water gas after the
+    30-40 % derate; the gas figure is the one that matters in service. Electric
+    starter, relay start input and battery are retrofits — the vendor page does
+    not list them, which is why the start signal has to be a wire.
+
+controller:
+  model: SMARTBOB SM-MINI-0808R
+  datasheet: https://smartbob.pl/produkt/sm-mini-0808r/
+  documentation: https://smartbobautomatyka.github.io/SmartbobPageWiki/
+  templates: https://github.com/SmartbobAutomatyka/SmartbobAutomatyka-GIT/tree/main/ESPHOME/SM-MINI-0808R-V17
+  pinout: https://docs.google.com/spreadsheets/d/1f-NrrFuqd2Pu4SJJxyYbYXiO_AjEefHKa8IfUKU8CmM/edit?gid=1302523101
+
+# INVERTER SETTINGS, not ours. Hysteresis is the point: without the 30/80 gap
+# the genset would chatter around the threshold.
 deye:
-  gen_start_soc: 30        # manual default. "Start = 30%": at this SOC the
-                           # normally-open Gen Signal relay closes.
-  gen_stop_soc: 80         # TO BE READ OFF THE DEVICE — the manual states the
-                           # start threshold plainly but not the stop one.
-  # Surplus thresholds that separate PV from PV_CHARGING. Two values, not one,
-  # because a single threshold makes the status flap when PV sits on it.
-  p_surplus_on: 120        # W — above this the surplus is called charging
-  p_surplus_off: 80        # W — below this it is not
-  gen_charge_a: 40         # manual default. At 51.2 V that is about 2.05 kW,
-                           # which is LESS than the 3.5 kW the genset makes.
-                           # Left at the default deliberately: the question of
-                           # what it should be is open and has to be settled on
-                           # the inverter, against what the cells accept through
-                           # the BMS and what the three-phase genset can give.
-                           # The simulator shows the cost: genset load factor.
+  gen_start_soc: 30        # manual default: the NO Gen Signal relay closes here
+  gen_stop_soc: 80         # TO BE READ OFF THE DEVICE — the manual gives start only
+  p_surplus_on: 120        # W — above this the PV surplus counts as charging
+  p_surplus_off: 80        # W — below this it does not (deadband, or the status flaps)
+  gen_charge_a: 40         # manual default; 2.05 kW at 51.2 V, less than the genset makes
   island_mode: true
   contact: GS
   contact_note: >-
-    Which terminal carries the start signal depends on the "Signal ISLAND MODE"
-    setting. Ticked, it is GS; unticked, GV. Island mode is on here, so GS —
-    which matches the G-start (1,2) pair in our wiring. Confirm on the device.
+    Which terminal carries the start signal depends on "Signal ISLAND MODE":
+    ticked GS, unticked GV. Island mode is on here, so GS. Confirm on the device.
 
-# =====================================================================
-#  TIME — two clocks, and why
-#
-#  A full cycle is about 19 hours: roughly 16 h draining the bank and 3 h
-#  charging it. The state machine runs in real seconds (t_crank is 3 s).
-#  One clock cannot serve both.
-#
-#  So the plant clock runs fast while nothing is happening and drops to real
-#  time the moment the controller has something to show. The multiplier is
-#  always displayed — a hidden variable clock is worse than a slow one.
-# =====================================================================
+# Two clocks: a full cycle is ~19 h, while t_attempt is 4 s. The plant clock
+# runs fast while nothing happens and drops to real time when the controller
+# has something to show. The multiplier is always displayed.
 clock:
-  warp: 240                # 1 s of simulation = 4 min of plant, while idle
+  warp: 240                   # 1 s of simulation = 4 min of plant, while idle
   realtime_states: [GENS_CRANKING, GENS_PAUSE, GENS_STOPPING, GENS_FAULT]
-  realtime_on_request: true   # also drop to 1x as soon as the request appears,
-                              # so the request hold and the ready dwell are
-                              # watchable. IN GENS_READY ONLY: the request stays
-                              # asserted for the whole charging run, and without
-                              # that restriction the clock sat at 1x for hours
-                              # of charging and gave back half the benefit.
+  realtime_on_request: true   # and in GENS_READY as soon as the request appears,
+                              # so the hold and the dwell are watchable
+
+# The inverter as a state machine. The contact is closed in DEYE_REQUEST and
+# DEYE_CHARGING, open in the other three.
+states_deye:
+  DEYE_PV:
+    contact: false
+    description: PV covers the loads, no surplus worth speaking of. The bank floats.
+  DEYE_PV_CHARGING:
+    contact: false
+    description: >-
+      PV covers the loads and the surplus charges the bank. Entering needs more
+      than p_surplus_on, leaving less than p_surplus_off.
+  DEYE_DISCHARGING:
+    contact: false
+    description: No surplus, the bank carries the load and SOC falls. Normal at night.
+  DEYE_REQUEST:
+    contact: true
+    description: >-
+      SOC reached the Start threshold, the Gen Signal relay has closed, the Deye
+      waits for voltage on the GEN port. The bank keeps draining meanwhile.
+  DEYE_CHARGING:
+    contact: true
+    description: >-
+      The genset produces and the Deye charges through the GEN port, limited by
+      gen_charge_a. The contact holds until the stop threshold.
 
 # =====================================================================
-#  MEASUREMENTS of the plant, merged with those of the controller.
+#  VIEW — gauges, layout, labels, sound. None of it is an input to a state.
 # =====================================================================
+
+# `model` names the behaviour the simulator implements for each quantity.
 measurements:
+  u_gen:
+    label: Genset phase voltage
+    unit: V
+    min: 0
+    max: 440
+    ok_from: 360
+    ok_to: 420
+    model: gen_voltage
+    description: >-
+      What the voltage monitoring relay on IN-02 measures. Its contact is the
+      only proof the controller has that the engine is producing.
+  t_engine:
+    label: Engine temperature
+    unit: °C
+    min: 0
+    max: 120
+    warn_above: 95
+    alarm_above: 110
+    model: engine_temp
+    description: >-
+      Air-cooled GX390. Below 40 °C is where a choke would be needed — which
+      this controller does not yet have.
+  u_batt:
+    label: Starter battery
+    unit: V
+    min: 8
+    max: 15
+    warn_below: 10.5
+    alarm_below: 9.5
+    model: starter_battery
+    description: >-
+      Sags hard while the starter turns and only partly recovers between
+      attempts. This is why the attempt limit exists.
+  soc:
+    label: Bank SOC
+    unit: "%"
+    min: 0
+    max: 100
+    warn_below: 25
+    model: bank_soc
+    description: >-
+      What the Deye reads from the BMS, register 588. The state machine acts on
+      the G-start contact, never on this number.
+  p_pv:
+    label: PV power
+    unit: W
+    min: 0
+    max: 4500
+    model: pv_power
+    description: 8 x JA Solar JAM72D30-540/MB, 4.32 kWp on the barn.
   p_load:
     label: Island load
     unit: W
@@ -480,52 +376,44 @@ measurements:
     warn_below: 70
     model: plant
     description: >-
-      How much of the genset's output is actually used. The Deye caps charging
-      at gen_charge_a, so with only the base load running the genset can be left
-      at well under full load — which is precisely what a gasifier does not want.
-      This gauge is here to answer that open question with a number.
+      How much of the genset's output is used. The Deye caps charging at
+      gen_charge_a, so with only the base load the genset runs well under full
+      load — which is precisely what a gasifier does not want.
 
-# =====================================================================
-#  DEYE_ — the inverter as a state machine. The contact is closed in
-#  DEYE_REQUEST and DEYE_CHARGING, open in the other two.
-#
-#  THE HYSTERESIS IS THE POINT. Start 30 %, stop 80 %. Without the gap the
-#  genset would chatter around the threshold — the same class of defect as the
-#  two clocks in the start logic, and just as invisible until it is drawn.
-# =====================================================================
-states_deye:
-  DEYE_PV:
-    description: >-
-      PV covers the loads, but with no surplus worth speaking of: the bank is
-      floating rather than charging. The genset contact is open.
-    contact: false
-  DEYE_PV_CHARGING:
-    description: >-
-      PV covers the loads AND charges the bank with the surplus. This is where
-      the installation should spend the summer, and it is worth telling apart
-      from bare PV: covering the load is not the same as filling the bank.
-      Entering needs more than p_surplus_on, leaving less than p_surplus_off —
-      a deadband, or the status would flap either side of the threshold.
-    contact: false
-  DEYE_DISCHARGING:
-    description: >-
-      No surplus. The bank carries the load and SOC falls. Still no request —
-      this is normal night-time operation, not a fault. Named to pair with
-      DEYE_CHARGING: the two are the same quantity with opposite sign.
-    contact: false
-  DEYE_REQUEST:
-    description: >-
-      SOC reached the Start threshold, the normally-open Gen Signal relay has
-      closed, and the Deye is waiting for voltage on the GEN port. The bank
-      keeps draining in the meantime: asking is not the same as being helped.
-    contact: true
-  DEYE_CHARGING:
-    description: >-
-      The genset is producing and the Deye is charging the bank through the GEN
-      port, current-limited by gen_charge_a. The contact stays closed until the
-      stop threshold, because releasing it at the start threshold would stop the
-      genset the instant it began to help.
-    contact: true
+# Energy chain in the synoptic bar, left to right. Causal order, and it closes:
+# the phase the genset produces goes back into the bank that asked for it.
+synoptic:
+  - { id: pv,      label: PV }
+  - { id: load,    label: load }
+  - { id: bank,    label: bank }
+  - { id: deye,    label: Deye }
+  - { id: request, label: GS contact }
+  - { id: engine,  label: engine }
+  - { id: phase,   label: phase }
+
+# State diagram, [x, y] in the SVG. Process order left to right, failure row
+# underneath.
+layout:
+  GENS_READY:    [ 70,  40]
+  GENS_CRANKING: [300,  40]
+  GENS_RUNNING:  [530,  40]
+  GENS_PAUSE:    [300, 170]
+  GENS_STOPPING: [530, 170]
+  GENS_FAULT:    [ 70, 170]
+
+# Which signal makes which sound. Declared here, not wired into the simulator:
+# the gasifier blower gets a voice by adding one line and one file.
+# `loop` plays while the signal is on, `up` and `down` fire on its edges.
+# Not `on`/`off` as key names: YAML parses both as booleans.
+sounds:
+  running: { loop: engine, up: engine-start, down: engine-stop }
+  starter: { loop: starter }
+
+# External hardware a signal depends on, linked from the input panel.
+devices:
+  running:
+    name: e.g. Relpol RPN-.VF-A400
+    url: https://www.relpol.pl/Produkty/Przekazniki-nadzorcze/Przekazniki-nadzorcze-modulowe/Przekazniki-nadzorcze-RPN-.VF-A400
 </script>
 <script id="i18n">
 // =====================================================================
@@ -706,37 +594,37 @@ const I18N = {
     },
     yaml: {
       'description':
-        'Modeluje WYŁĄCZNIE agregat. Odczyt styku G-start z Deye, rozruch z limitem prób, gaszenie przez zwarcie zapłonu do masy po zaniku sygnału. Zgazowywacza tu nie ma — ani dmuchawy, ani zaworu gazu, ani stanu złoża. Cykl zaczyna sygnał z Deye, kończy powrót do gotowości.\n\nKONWENCJA NAZW: stany tej warstwy mają prefiks GENS_ (agregat). Kolejne warstwy dostaną własne: GAZ_ dla gazogeneratora, RET_ dla retorty. Bez tego GENS_RUNNING i GAZ_RUNNING zderzyłyby się, gdy maszyny staną obok siebie — pracujący silnik i reaktor w produkcji gazu to nie ten sam stan.',
+        'Modeluje wyłącznie agregat: czyta styk G-start z Deye, kręci z limitem prób, gasi silnik zwierając zapłon do masy. Stany mają prefiks GENS_, żeby gazogenerator (GAZ_) i retorta (RET_) mogły stanąć obok bez kolizji nazw.',
 
       'inputs.gen_request.label': 'Sygnał startowy z Deye',
       'inputs.gen_request.description':
-        'Styk bezpotencjałowy G-start, zaciski 1,2 falownika. ON = żądanie pracy agregatu. OFF = brak żądania. Logika widzi to wejście dopiero po przytrzymaniu {t_request_hold} s; zanik działa natychmiast. Asymetria jest celowa — chwilowe żądanie nie może odpalić silnika, ale wycofane żądanie musi natychmiast przerwać kręcenie.',
+        'Styk bezpotencjałowy G-start, zaciski 1 i 2 falownika. ON = żądanie pracy.',
       'inputs.running.label': 'Praca potwierdzona',
       'inputs.running.description':
-        'Zewnętrzny przekaźnik nadzoru napięcia na szynie DIN, wpięty na fazę wyjścia agregatu. Jego styk bezpotencjałowy wchodzi na IN-02. ON = napięcie w oknie roboczym, czyli agregat produkuje.',
+        'Styk bezpotencjałowy zewnętrznego przekaźnika nadzoru napięcia na fazie wyjścia agregatu. ON = napięcie w oknie roboczym, czyli agregat produkuje.',
       'inputs.running.device.name': 'np. Relpol RPN-.VF-A400',
       'inputs.co_alarm.label': 'Alarm CO',
       'inputs.co_alarm.description':
-        'Styk alarmowy czujnika tlenku węgla w maszynowni, podany na IN-03. ON = wykryty tlenek węgla. Czujnik potrzebuje drugiego styku — do sprzętowego łańcucha zezwolenia, który gasi silnik niezależnie od sterownika.',
+        'Styk alarmowy czujnika tlenku węgla. ON = wykryty tlenek węgla.',
       'inputs.kill_btn.label': 'Przycisk gaszenia',
       'inputs.kill_btn.description':
-        'Przycisk monostabilny w drzwiach szafy. To ŻĄDANIE, nie samo gaszenie: wciśnięcie przenosi maszynę do GENS_STOPPING, który wzbudza przekaźnik gaszenia i trzyma zwarcie przez {t_kill} s niezależnie od tego, jak długo przycisk był trzymany. Wpięcie przycisku wprost w linię zapłonu sprawia, że krótkie naciśnięcie zostawia pracujący silnik.',
+        'Przycisk monostabilny. Żądanie, nie samo gaszenie: przenosi maszynę do GENS_STOPPING, który trzyma zwarcie przez {t_kill} s, choćby naciśnięcie było najkrótsze.',
       'inputs.reset.label': 'Reset awarii',
       'inputs.reset.description':
-        'Przycisk monostabilny w drzwiach szafy, podany na IN-04. ON = wciśnięty. Wraca do OFF po puszczeniu.',
+        'Przycisk monostabilny. Kasuje GENS_FAULT, jeśli nic nie blokuje.',
 
       'outputs.ignition.short': 'ZAPŁON',
       'outputs.starter.short': 'ROZRUSZNIK',
       'outputs.kill.short': 'GASZENIE',
       'outputs.kill.label': 'Przekaźnik gaszenia',
       'outputs.kill.description':
-        'ENERGIZUJ-ABY-ZGASIĆ, czyli odwrotna polaryzacja niż przekaźnik zapłonu. Wzbudzony zwiera zapłon do masy: gaszenie czynne, o określonym czasie trwania. NIE jest odwrotnością przekaźnika zapłonu — wzbudza się tylko na czas zatrzymywania i w awarii, a nie w spoczynku. W spoczynku zwarcie i tak trzyma styk NC odpadniętego przekaźnika zapłonu, więc druga cewka pod napięciem przez godziny zużywałaby się bez powodu. Dwie niezależne drogi celowo: jedna zawodzi bezpiecznie przy zaniku zasilania, druga działa czynnie na polecenie.',
+        'Energizuj-aby-zgasić, odwrotna polaryzacja niż przekaźnik zapłonu i nie jego odwrotność: wzbudzony tylko przy zatrzymywaniu i w awarii.',
       'outputs.ignition.label': 'Przekaźnik zapłonu',
       'outputs.ignition.description':
-        'ON = styk NC w linii gaszenia otwarty, obwód zapłonu czynny. OFF = zapłon zwarty do masy, silnik zatrzymany.',
+        'Energizuj-aby-pracować. ON = styk NC w linii gaszenia otwarty, zapłon czynny. OFF = zapłon zwarty do masy, silnik zatrzymany.',
       'outputs.starter.label': 'Przekaźnik rozrusznika',
       'outputs.starter.description':
-        'Steruje cewką stycznika rozrusznika, nie zasila rozrusznika bezpośrednio. ON = stycznik załączony, rozrusznik kręci. OFF = stycznik rozwarty.',
+        'Steruje cewką stycznika rozrusznika. Wzbudzenie czeka {t_prestart} s od żądania stanu, odpadnięcie jest natychmiastowe.',
 
       'counters.attempts': 'próby',
 
@@ -745,24 +633,24 @@ const I18N = {
       'measurements.p_bank.label': 'Moc banku',
       'measurements.p_bank.description': 'Dodatnia ładuje bank, ujemna rozładowuje. To ona porusza SOC.',
       'measurements.gen_load.label': 'Obciążenie agregatu',
-      'measurements.gen_load.description': 'Ile z mocy agregatu jest realnie wykorzystane. Deye ogranicza ładowanie nastawą Gen Charge, więc przy samych odbiorach bazowych agregat potrafi jechać mocno poniżej pełnego obciążenia — czego gazogenerator nie znosi. Ten wskaźnik ma odpowiedzieć na to pytanie liczbą.',
+      'measurements.gen_load.description': 'Ile z mocy agregatu jest realnie wykorzystane. Deye ogranicza ładowanie nastawą gen_charge_a, więc przy samych odbiorach bazowych agregat jedzie mocno poniżej pełnego obciążenia — czego gazogenerator nie znosi.',
       'measurements.u_gen.label': 'Napięcie fazy agregatu',
       'measurements.u_gen.description':
-        'To mierzy przekaźnik nadzoru napięcia na IN-02. Zamyka styk w oknie roboczym, a ten styk jest jedynym dowodem, jaki sterownik ma na to, że silnik faktycznie produkuje.',
+        'To mierzy przekaźnik nadzoru napięcia na IN-02. Jego styk jest jedynym dowodem, jaki sterownik ma na to, że silnik produkuje.',
       'measurements.t_engine.label': 'Temperatura silnika',
       'measurements.t_engine.description':
-        'GX390 chłodzony powietrzem. Rośnie pod obciążeniem, opada po zatrzymaniu. Poniżej 40 °C potrzebne byłoby ssanie — którego ten sterownik jeszcze nie ma.',
+        'GX390 chłodzony powietrzem. Poniżej 40 °C potrzebne byłoby ssanie — którego ten sterownik jeszcze nie ma.',
       'measurements.u_batt.label': 'Akumulator rozrusznika',
       'measurements.u_batt.description':
-        'Zapada mocno przy kręceniu i wraca tylko częściowo między próbami. TO JEST POWÓD, DLA KTÓREGO ISTNIEJE LIMIT PRÓB: trzy próby to budżet, nie formalność. Popatrz, jak schodzi przez nieudany cykl rozruchu.',
+        'Zapada mocno przy kręceniu i wraca tylko częściowo między próbami. Dlatego istnieje limit prób.',
       'measurements.soc.label': 'SOC banku',
       'measurements.soc.description':
-        'Odczyt z Deye po Modbusie, rejestr 588. Spada pod odbiorami wyspy, rośnie gdy agregat ładuje. Tylko informacyjnie — maszyna stanów działa na styku G-start, nie na SOC.',
+        'To, co Deye czyta z BMS, rejestr 588. Maszyna stanów działa na styku G-start, nigdy na tej liczbie.',
       'measurements.p_pv.label': 'Moc PV',
       'measurements.p_pv.description': '8 × JA Solar JAM72D30-540/MB, 4,32 kWp na stodole.',
 
       'states.GENS_READY.description':
-        'Sterownik zasilany, wyjścia w stanie bezpiecznym. Linia gaszenia zwarta do masy. Start blokują dwa niezależne warunki na dwóch różnych zegarach: żądanie musi być przytrzymane {t_request_hold} s (filtr wejścia) ORAZ sterownik musi stać w tym stanie {t_ready} s (zegar stanu). Drugi warunek liczy się tylko zaraz po cyklu albo po skasowaniu awarii; gdy sterownik już postał, jest dawno spełniony — i tak ma być, wypoczęty silnik nie potrzebuje postoju. Warunek `not running` blokuje start, jeśli silnik z jakiegoś powodu nadal chodzi.',
+        'Wyjścia w stanie bezpiecznym, linia gaszenia zwarta do masy. Start wymaga żądania przytrzymanego {t_request_hold} s i tego stanu przez {t_ready} s — dwa warunki na dwóch różnych zegarach.',
       'states.GENS_READY.transitions.0.description': 'Żądanie {t_request_hold} s, postój {t_ready} s — rozruch',
 
       'states.GENS_CRANKING.transitions.1.description': 'Przycisk gaszenia',
@@ -782,7 +670,7 @@ const I18N = {
       'states.GENS_RUNNING.transitions.3.description': 'Zanik sygnału z Deye',
 
       'states.GENS_FAULT.description':
-        'Przekaźnik zapłonu OFF. Wymaga ręcznego skasowania. Kasowanie zablokowane, dopóki utrzymuje się potwierdzenie pracy — oznacza to niesprawny obwód gaszenia.',
+        'Zapłon odcięty, wymagane ręczne skasowanie. Kasowanie zablokowane, dopóki trwa potwierdzenie pracy — to znaczyłoby niesprawny obwód gaszenia.',
       'states.GENS_FAULT.transitions.0.description': 'Kasowanie awarii',
 
       'states.GENS_PAUSE.description': 'Przerwa termiczna rozrusznika przed kolejną próbą.',
@@ -792,7 +680,7 @@ const I18N = {
       'states.GENS_PAUSE.transitions.4.description': 'Przerwa {t_pause} s minęła — kolejna próba',
 
       'states.GENS_STOPPING.description':
-        'Przekaźnik zapłonu OFF — styk NC zwiera zapłon do masy.',
+        'Zapłon zwarty do masy przez oba przekaźniki, silnik się zatrzymuje.',
       'states.GENS_STOPPING.transitions.0.description': 'Zgaszony, zwarcie trzymane {t_kill} s',
       'states.GENS_STOPPING.transitions.1.description': 'Potwierdzenie pracy przez {t_rundown} s — obwód gaszenia niesprawny',
     }
@@ -1278,7 +1166,7 @@ function filtrKrok(dt){
 }
 
 function naglowek(){
-  const g=M.genset||{}, st=M.controller||{};
+  const g=(PL&&PL.genset)||{}, st=(PL&&PL.controller)||{};
   let pod=esc(M.name||'');
   if(st.model && st.datasheet){
     pod=pod.replace(esc(st.model),
@@ -1303,6 +1191,13 @@ function zaladuj(txt){
   const d = jsyaml.load(txt);
   if(!d || !d.states) throw new Error(T('err.noStates'));
   M=d; zrodlo=txt;
+  // Układ grafu siedzi w plant.yaml — to widok, nie sterowanie. Stan bez wpisu
+  // dostaje miejsce w siatce, żeby dopisanie stanu w okienku nie psuło rysunku.
+  const uklad=(PL&&PL.layout)||{};
+  Object.keys(M.states).forEach((k,i)=>{
+    const l=uklad[k]||[70+230*(i%3), 40+130*Math.floor(i/3)];
+    M.states[k].x=l[0]; M.states[k].y=l[1];
+  });
   naglowek();
   // stan instalacji MUSI istnieć przed rysowaniem wejść: suwaki czytają
   // INST.load_kw przy budowie, a resetuj() woła się dopiero niżej
@@ -1416,9 +1311,9 @@ function podstaw(s){
     return m;
   });
 }
-function linkUrzadzenia(o,sciezka){
-  const u=o.device;
-  if(!u||!u.url) return '';
+function linkUrzadzenia(k,sciezka){
+  const u=((PL&&PL.devices)||{})[k]||{};
+  if(!u.url) return '';
   const nazwa = TY(sciezka+'.device.name', u.name) || T('word.datasheet');
   return '<a class="urz" href="'+esc(u.url)+'" target="_blank" rel="noopener">'+
          esc(nazwa)+' &#8599;</a>';
@@ -1604,13 +1499,14 @@ function petlaWyl(k){
   } else if(w.el){ try{ w.el.pause(); }catch(e){} }
 }
 function wszystkiePetleWyl(){ Object.keys(GRAJACE).forEach(petlaWyl); }
-// Dźwięk pinu bierze się z DEKLARACJI w YAML-u, nie z nazwy w kodzie.
+// Dźwięk pinu bierze się z DEKLARACJI w plant.yaml, nie z nazwy w kodzie.
+// Maszyna stanów o dźwiękach nie wie — to warstwa widoku.
 function dzwiekPinu(grupa, k, v){
   if(!dzwiekWl) return;
-  const o=(M[grupa]||{})[k]||{};
-  if(o.sound_loop){ v ? petlaWl(o.sound_loop, grupa==='outputs'?0.9:0.8) : petlaWyl(o.sound_loop); }
-  if(v && o.sound_on)  graj(o.sound_on, 0.95);
-  if(!v && o.sound_off) graj(o.sound_off, 0.9);
+  const o=((PL&&PL.sounds)||{})[k]||{};
+  if(o.loop){ v ? petlaWl(o.loop, grupa==='outputs'?0.9:0.8) : petlaWyl(o.loop); }
+  if(v && o.up)   graj(o.up, 0.95);
+  if(!v && o.down) graj(o.down, 0.9);
 }
 const SKALA=[392,440,494,523,587,659,698];   // bez półtonów, żeby się nie gryzło
 function audioGotowe(){
@@ -1876,7 +1772,7 @@ function rysujWejscia(){
     const opis = TY('inputs.'+k+'.description', w.description||'');
     d.innerHTML='<div class="etyk">'+(w.pin?'<span class="pin">'+esc(w.pin)+'</span> ':'')+
       esc(etykPinu('inputs',k))+auto+fil+
-      (opis?'<small>'+esc(podstaw(opis))+linkUrzadzenia(w,'inputs.'+k)+'</small>':'')+'</div>';
+      (opis?'<small>'+esc(podstaw(opis))+linkUrzadzenia(k,'inputs.'+k)+'</small>':'')+'</div>';
     const p=document.createElement('div');
     p.className='przel'+(w.momentary?' chwil':''); p.dataset.k=k;
     p.onclick=()=>{
@@ -2029,7 +1925,7 @@ function budujWyjscia(){
     const o=M.outputs[k];
     const opis = TY('outputs.'+k+'.description', o.description||'');
     const pelna=etykPinu('outputs',k);
-    const krotka=TY('outputs.'+k+'.short', o.short||pelna);
+    const krotka=TY('outputs.'+k+'.short', k.toUpperCase());
     const d=document.createElement('div'); d.className='wy';
     // pełna nazwa i opis w dymku — wiersz ma być jednoliniowy, bo przekaźników
     // będzie dziesięć, gdy dojdzie gazogenerator i retorta
@@ -2088,7 +1984,7 @@ function odswiezPomiary(){
 }
 function odswiezSynoptyke(){
   const c=document.getElementById('synoptyka'); if(!c) return;
-  const lista=M.synoptic||[];
+  const lista=(PL&&PL.synoptic)||[];
   if(c.childElementCount===0){
     c.innerHTML = lista.map((b,i)=>
       (i?'<span class="syn-strz">→</span>':'')+
