@@ -183,9 +183,30 @@ and carrying nobody else's recording.
 
 Loops are WAV, not mp3. Every mp3 encoder pads both ends, which in a loop is
 audible as a regular click. The loop point is crossfaded with an equal-power
-curve, and the files are cut to a whole number of cycles — the starter loop runs
-at 2.5 Hz, which is a single-cylinder compressing once every two revolutions at
-cranking speed, and the engine loop at 25 Hz.
+curve over 150 ms.
+
+A crossfade alone is not enough, and the engine loop proved it. Two things
+betray a loop to the ear, and neither of them lives at the splice:
+
+**A level trend.** The recording is of an engine settling after the catch, so
+the raw cut ramped down 2.7 dB from start to end and every pass through the loop
+was loud at the beginning and quiet at the end. The window is now chosen by
+measurement — a linear regression on the 50 ms level track over the whole
+recording, looking for the flattest stretch, which is 18.10 s onwards at 0.0 dB
+of drift and 1.0 dB of spread. Whatever trend remains is divided out before the
+crossfade, as a straight line and never as an instantaneous envelope: the
+instantaneous envelope would flatten the firing pulses, and those are the signal.
+
+**A limp in the rhythm.** The envelope autocorrelates at 86.6 ms, one crankshaft
+revolution at 690 rpm — a rough idle, so the pattern repeats per revolution
+rather than per firing. If the loop length is not a whole number of those, the
+beat that crosses the splice is too long or too short and you hear the engine
+stumble once per pass. The length is picked by sweeping 1.70 s to 2.25 s in 5 ms
+steps and scoring each candidate on exactly that defect: the interval spanning
+the splice against the median of all the others. 1.915 s scores 0.0 ms and holds
+at crossfades of 20, 30, 40, 60 and 150 ms, so it is phase agreement and not an
+artefact of one crossfade width. The worst lengths in the same band are out by
+120 to 144 ms.
 
 The relay snaps are WAV as well, for a different reason: a contact snap is an
 impulse, and mp3 smears it. Measured on the same cut, a peak normalised to

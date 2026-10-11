@@ -1534,7 +1534,7 @@ let AUDIO=null, dzwiekWl=false, ostatniTon=0;
 // przeglądarka odmówiła, dźwięk nadal jest, tylko prostszy.
 // WAV, nie mp3, dla trzaśnięć przekaźnika: mp3 rozmazuje impuls i gubi na nim
 // ~3 dB szczytu. SV wymusza pobranie po republikacji — /files/ ma expires 1d.
-const DZW={}, WAVY={'relay-on':1,'relay-off':1}, SV='?v=2';
+const DZW={}, WAVY={'relay-on':1,'relay-off':1}, SV='?v=3';
 function plikDzw(nazwa){ return 'sounds/'+nazwa+(WAVY[nazwa]?'.wav':'.mp3')+SV; }
 function graj(nazwa, glosno){
   if(!dzwiekWl || !nazwa) return false;

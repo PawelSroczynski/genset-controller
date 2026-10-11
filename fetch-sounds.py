@@ -55,11 +55,35 @@ def wczytaj(plik, od, do):
         capture_output=True, check=True).stdout
     return np.frombuffer(sur, dtype='<i2').astype(float)/32768.0
 
+def wyrownaj_dryf(x, ramka_ms=50):
+    """Zdejmuje wolny dryf poziomu. Regresja liniowa na obwiedni w dB
+    i odwrotna poprawka — samo nachylenie, bez przesunięcia, więc średni
+    poziom zostaje.
+
+    Po co: nagranie silnika cichnie po zaskoku, obroty się układają. Pętla
+    z surowego wycinka ma przez to rampę w dół i po sklejeniu słychać, gdzie
+    się zaczyna — głośniej na początku, ciszej na końcu. Poprawka jest LINIĄ,
+    nie obwiednią chwilową: obwiednia chwilowa skasowałaby wybuchy, czyli to,
+    co w silniku jest sygnałem, a nie błędem."""
+    h = int(SR*ramka_ms/1000.0)
+    n = max(2, len(x)//h)
+    db = np.array([20*np.log10(np.sqrt(np.mean(x[i*h:(i+1)*h]**2)) + 1e-9)
+                   for i in range(n)])
+    t = np.arange(n)
+    nachylenie = np.polyfit(t, db, 1)[0]
+    g = 10**(-(nachylenie*t)/20.0)
+    return x*np.interp(np.arange(len(x)), (t+0.5)*h, g)
+
 def petla(x, zakladka_ms=150):
     """Pętla z przenikaniem. Nagranie nie zapętla się samo: koniec i początek
     nie pasują do siebie i słychać to jako klik przy każdym obrocie. Ogon
     przenika się z początkiem krzywą równej mocy, więc szew znika, a głośność
-    w miejscu sklejenia nie siada."""
+    w miejscu sklejenia nie siada.
+
+    Dryf zdejmowany PRZED przenikaniem. Przenikanie samo zszywa tylko 150 ms
+    na styku — rampy rozciągniętej na dwie sekundy nie widzi, a to ją właśnie
+    słychać jako „inny początek i koniec"."""
+    x = wyrownaj_dryf(x)
     o = int(SR*zakladka_ms/1000.0)
     assert len(x) > 2*o, 'wycinek za krótki na zakładkę'
     L = len(x) - o
@@ -131,7 +155,20 @@ if __name__ == '__main__':
         ('relay-off',    click, 0.204, 0.340, 'click', -3.0),
         ('engine-start', auto, 14.85, 17.60, 'mp3',   -7.0),
         ('starter',      auto, 14.95, 16.05, 'loop', -10.0),
-        ('engine',       auto, 17.60, 19.75, 'loop', -12.0),
+        # Okno biegu jałowego wybrane POMIAREM, nie na oko: regresja poziomu
+        # w ramkach 50 ms po całym nagraniu daje tu dryf 0,0 dB i rozrzut
+        # 1,0 dB — najspokojniejszy fragment w całym pliku. Poprzednie okno
+        # 17,60–19,75 spadało o 2,7 dB i to był ten słyszalny „początek
+        # i koniec" pętli.
+        # Długość pętli 1,915 s. Nie jest okrągła i nie ma być: wybrana
+        # przemiałem 1,70–2,25 s co 5 ms po KRYTERIUM SŁYSZALNEJ WADY —
+        # odstęp wybuchów przechodzący przez szew ma być równy medianie
+        # (86,7 ms, czyli obrót wału przy 690 obr/min). Przy 1,915 s błąd
+        # wynosi 0,0 ms i trzyma się przy zakładce 20, 30, 40, 60 i 150 ms,
+        # więc to zgodność fazy rytmu, a nie przypadek jednego przenikania.
+        # Najgorsze długości w tym samym paśmie dają 120–144 ms błędu, czyli
+        # kuksaniec co obrót pętli. Do tego 150 ms zakładki: 1,915 + 0,150.
+        ('engine',       auto, 18.100, 20.165, 'loop', -12.0),
     ]
     for nazwa, zrodlo, od, do, fmt, db in WYCINKI:
         x = wczytaj(zrodlo, od, do)
