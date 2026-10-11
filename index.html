@@ -310,6 +310,65 @@ parameters:
                             # 4000 l of near-boiling water in a room full of
                             # electronics.
 
+# =====================================================================
+#  COUPLING — the joint between the three machines, AS DATA.
+#  The interworking diagram in the simulator is rendered from this section,
+#  so a wrong coupling is visible rather than buried in a comment.
+# =====================================================================
+coupling:
+  # Lane order for the interworking diagram. Explicit rather than derived from
+  # key order, because key order in state-machine.yaml follows the diagram
+  # layout, not the process flow. Validated against the state tables: every
+  # entry must exist and every state must appear exactly once.
+  lanes:
+    - layer: RET_
+      label: Pyrolysis retort — charcoal from wood, batch
+      source: states_retort
+      order: [RET_COLD, RET_CHARGING, RET_LIGHTING, RET_DEVOLATILISING, RET_FINISHING,
+              RET_COOLDOWN, RET_DISCHARGING, RET_SEASONING, RET_FAULT]
+    - layer: GAZ_
+      label: Gasifier CXF — water gas from charcoal
+      source: states_gas
+      order: [GAZ_COLD, GAZ_LIGHTING, GAZ_WARMUP, GAZ_FLARE, GAZ_READY,
+              GAZ_PURGE, GAZ_SUPPLYING, GAZ_SHUTDOWN, GAZ_COOLDOWN, GAZ_FAULT]
+    - layer: AGR_
+      label: Genset FH9000R — live machine, simulated in the AGR_ view
+      source: state_machine
+      order: [AGR_READY, AGR_CRANKING, AGR_PAUSE, AGR_RUNNING, AGR_STOPPING, AGR_FAULT]
+  links:
+    - from: GAZ_READY
+      to: AGR_READY
+      signal: gas_ready
+      kind: signal
+      description: >-
+        Widens the AGR_READY exit condition from `gen_request` to
+        `gen_request and gas_ready`. THE ONLY CHANGE TO THE GENSET MACHINE.
+    - from: AGR_RUNNING
+      to: GAZ_PURGE
+      signal: engine_drawing
+      kind: signal
+      description: >-
+        Without the engine drawing, gas does not flow: the reactor idles and the
+        bed cools down. It also gates the purge, after which the engine valve
+        may open.
+    - from: RET_SEASONING
+      to: GAZ_COLD
+      signal: store_kg
+      kind: inventory
+      delay: 8 days
+      description: >-
+        NOT a real-time signal. The retort makes charcoal, it seasons in the
+        open for 8 days, then enters the store; the gasifier draws from the
+        store and its precondition is `store_kg > 0`. The timescale is days,
+        not seconds, so there is no transition between these two machines.
+  shared:
+    signals: [co_alarm, t_pile, t_buffer_top]
+    description: >-
+      These belong to no layer. They are the background all three machines
+      operate in: a CO alarm faults every one of them, pile temperature warns of
+      char self-ignition with nobody's involvement, and buffer temperature caps
+      heat recovery before the EPDM membrane has to work at 80 degC.
+
 counters:
   store_kg:    0   # charcoal fit for use, seasoning complete
   season_kg:   0   # charcoal still seasoning, not yet permitted as fuel
@@ -862,11 +921,12 @@ const I18N = {
       'word.when':        'when',
       'word.hold':        'hold',
       'word.datasheet':   'datasheet',
-      'skeleton.badge':   'skeleton \u2014 not simulated, English only',
-      'skeleton.pick':    'Click a state in the diagram to read it',
+      'skeleton.badge':   'interworking \u2014 not simulated, English only',
+      'skeleton.pick':    'Click any state in the diagram to read it',
       'layer.agr.title':  'Genset \u2014 live machine, simulated',
-      'layer.gaz.title':  'Charcoal gasifier \u2014 state skeleton, not simulated',
-      'layer.ret.title':  'Pyrolysis retort \u2014 state skeleton, not simulated',
+      'layer.gaz.title':  'Interworking: genset, gasifier and retort on one diagram',
+      'shared.label':     'shared, above the layers',
+      'word.inventory':   'inventory, not a signal',
       'word.missing':     'to be established',
       'err.yaml':         'YAML error:',
       'err.load':         'Failed to load definition:',
@@ -912,11 +972,12 @@ const I18N = {
       'word.when':        'gdy',
       'word.hold':        'przytrzymanie',
       'word.datasheet':   'karta katalogowa',
-      'skeleton.badge':   'szkielet \u2014 bez symulacji, tylko po angielsku',
+      'skeleton.badge':   'współdziałanie \u2014 bez symulacji, opisy po angielsku',
       'skeleton.pick':    'Kliknij stan na schemacie, żeby go przeczytać',
       'layer.agr.title':  'Agregat \u2014 maszyna żywa, symulowana',
-      'layer.gaz.title':  'Gazogenerator \u2014 szkielet stanów, bez symulacji',
-      'layer.ret.title':  'Retorta pirolityczna \u2014 szkielet stanów, bez symulacji',
+      'layer.gaz.title':  'Współdziałanie: agregat, gazogenerator i retorta na jednym schemacie',
+      'shared.label':     'wspólne, ponad warstwami',
+      'word.inventory':   'zapas, nie sygnał',
       'word.missing':     'do ustalenia',
       'err.yaml':         'Błąd YAML:',
       'err.load':         'Błąd wczytywania definicji:',
@@ -1022,11 +1083,31 @@ button.stop{background:var(--amber);border-color:var(--amber);color:#2a1d00;font
 select{background:var(--panel2);color:var(--tekst);border:1px solid var(--linia);
   border-radius:7px;padding:6px 8px;font-size:12.5px;font-family:inherit}
 main{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:12px;padding:12px 18px}
-.diagram{flex:1 1 40%;min-height:0;background:var(--panel);border:1px solid var(--linia);
-  border-radius:12px;padding:10px;display:flex}
-svg{width:100%;height:100%;display:block}
-.kolumny{flex:1 1 60%;min-height:0;display:grid;
-  grid-template-columns:1.3fr 1.1fr 1.05fr 1.25fr;gap:12px}
+.diagram{flex:1 1 38%;min-height:0;background:var(--panel);border:1px solid var(--linia);
+  border-radius:12px;padding:32px 10px 10px;display:flex;flex-direction:column}
+/* Płótno przewija się SAMO, pasek warstw zostaje na miejscu — gdyby svg leżał
+   wprost w .diagram, przewijanie zabierałoby ze sobą przyciski warstw. */
+.plotno{flex:1 1 auto;min-height:0;overflow:auto;display:flex;
+  align-items:center;justify-content:center;
+  scrollbar-width:thin;scrollbar-color:#36465a transparent}
+.plotno::-webkit-scrollbar{width:7px;height:7px}
+.plotno::-webkit-scrollbar-thumb{background:#36465a;border-radius:4px}
+svg{display:block;flex:0 0 auto}
+/* Kolumna „Wejścia" jest najszersza celowo: jej opisy są najdłuższe, a szerokość
+   kupuje wysokość — każdy zawinięty wiersz mniej to ok. 16 px w dół. */
+.kolumny{flex:1 1 62%;min-height:0;display:grid;
+  grid-template-columns:1.62fr 1.02fr 0.98fr 1.12fr;gap:12px}
+/* Niskie okna: diagram oddaje jeszcze więcej, żeby „Wejścia" nie dostały skrola. */
+@media(min-width:1451px) and (max-height:1020px){
+  .diagram{flex:1 1 30%}
+  .kolumny{flex:1 1 70%}
+}
+@media(min-width:1451px) and (max-height:940px){
+  .diagram{flex:1 1 24%}
+  .kolumny{flex:1 1 76%}
+  .wiersz{padding:7px 0}
+  .etyk small{font-size:10.6px;line-height:1.42}
+}
 .karta{background:var(--panel);border:1px solid var(--linia);border-radius:12px;
   padding:12px 14px;display:flex;flex-direction:column;min-height:0}
 .karta h2{font-size:10.5px;text-transform:uppercase;letter-spacing:1.1px;color:var(--szary);
@@ -1038,10 +1119,10 @@ svg{width:100%;height:100%;display:block}
 .karta .tresc::-webkit-scrollbar-thumb{background:#36465a;border-radius:3px}
 .karta .tresc::-webkit-scrollbar-thumb:hover{background:#44586e}
 .wiersz{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;
-  padding:9px 0;border-bottom:1px solid #212d39}
+  padding:8px 0;border-bottom:1px solid #212d39}
 .wiersz:last-child{border-bottom:none}
 .etyk{font-size:13px;line-height:1.35;min-width:0;overflow-wrap:anywhere;font-weight:500}
-.etyk small{display:block;color:#6d8097;font-size:11px;line-height:1.5;
+.etyk small{display:block;color:#6d8097;font-size:10.9px;line-height:1.45;
   margin-top:3px;font-weight:400}
 .przel{position:relative;width:42px;height:23px;flex:0 0 auto;margin-top:1px;background:#2b3a49;
   border-radius:12px;cursor:pointer;transition:background .15s;border:1px solid var(--linia)}
@@ -1177,10 +1258,10 @@ footer .jezyk button{padding:4px 8px;font-size:10.5px}
 <main>
   <div class="diagram">
     <div class="warstwy">
-      <button data-w="AGR" class="akt">AGR_</button><button data-w="GAZ">GAZ_</button><button data-w="RET">RET_</button>
+      <button data-w="AGR" class="akt">AGR_</button><button data-w="GAZ">GAZ_</button>
       <span class="szk-plakietka" id="szkBadge"></span>
     </div>
-    <svg id="svg" preserveAspectRatio="xMidYMid meet"></svg>
+    <div class="plotno" id="plotno"><svg id="svg" preserveAspectRatio="xMidYMid meet"></svg></div>
   </div>
 
   <div class="kolumny">
@@ -1305,8 +1386,20 @@ let M=null, stan=null, t=0, wStanie=0, we={}, lic={}, gra=false, petla=null, zro
 // rysowany poglądowo. Szkielet nie ma sygnałów ani parametrów, więc go nie symulujemy —
 // `gotowe()` nie jest na nim wywoływane i żaden węzeł nie jest „bieżący".
 let SZK=null, warstwa='AGR', wybSzk=null;
-function stanySzk(w){ return w==='GAZ' ? (SZK||{}).states_gas : (SZK||{}).states_retort; }
-function stanyRys(){ return warstwa==='AGR' ? (M?M.states:{}) : (stanySzk(warstwa)||{}); }
+// Zbiór wszystkich stanów trzech warstw — potrzebny, bo w schemacie
+// współdziałania klikalne są chipy z każdej z nich.
+function zrodloStanow(nazwa){
+  if(nazwa==='state_machine') return M?M.states:{};
+  return (SZK||{})[nazwa]||{};
+}
+function wszystkieStany(){
+  const w={};
+  for(const L of pasy()) Object.assign(w, zrodloStanow(L.source));
+  return w;
+}
+function pasy(){ return (((SZK||{}).coupling||{}).lanes)||[]; }
+function sprzegla(){ return (((SZK||{}).coupling||{}).links)||[]; }
+function wspolne(){ return (((SZK||{}).coupling||{}).shared)||{}; }
 function wybierzSzk(k){ wybSzk=k; panelStanu(); ostatniSvg=''; odswiez(); }
 function ustawWarstwe(w){
   warstwa=w; wybSzk=null;
@@ -1318,7 +1411,7 @@ function ustawWarstwe(w){
 }
 function panelStanu(){
   if(warstwa==='AGR'){ ostatniStan=null; return; }   // wypełni odswiez()
-  const S=stanySzk(warstwa)||{};
+  const S=wszystkieStany();
   const nz=document.getElementById('stanNazwa'), op=document.getElementById('stanOpis');
   const pc=document.getElementById('przejscia');
   pc.innerHTML='';
@@ -1626,8 +1719,26 @@ function rysujWejscia(){
     rysujWejscia(); odswiez(); };
   m.appendChild(mp); c.appendChild(m);
 }
+// Dobiera rozmiar svg w pikselach. Dopasowuje do panelu dopóki tekst nie zrobi się
+// mniejszy niż MIN_TEKST — poniżej tego progu płótno przewija się zamiast kurczyć
+// dalej. Przy 1600x900 samo dopasowanie dawało tekst chipu 3,5 px.
+//
+// Próg jest w ROZMIARZE TEKSTU, nie w surowej skali: węzły AGR_ mają czcionkę 13,
+// chipy schematu 10,5, więc ta sama skala daje w obu widokach inną czytelność
+// i stały próg skali niepotrzebnie włączałby przewijanie w widoku AGR_.
+const MIN_TEKST = 8.4;
+function dopasujPlotno(vbW, vbH, czcionkaBazowa){
+  const svg=document.getElementById('svg'), pl=document.getElementById('plotno');
+  const dostW=Math.max(60, pl.clientWidth), dostH=Math.max(60, pl.clientHeight);
+  const minSk=MIN_TEKST/(czcionkaBazowa||13);
+  const sk=Math.max(Math.min(dostW/vbW, dostH/vbH), minSk);
+  svg.style.width=(vbW*sk)+'px';
+  svg.style.height=(vbH*sk)+'px';
+}
+
 function rysujSvg(){
-  const S=stanyRys(), szk=(warstwa!=='AGR');
+  if(warstwa!=='AGR'){ rysujWspoldzialanie(); return; }
+  const S=M.states;
   if(!S || !Object.keys(S).length) { document.getElementById('svg').innerHTML=''; return; }
   const W=160, H=56, MAR=26;
   let minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
@@ -1638,6 +1749,7 @@ function rysujSvg(){
   const svg=document.getElementById('svg');
   svg.setAttribute('viewBox',(minX-MAR)+' '+(minY-MAR)+' '+
     (maxX-minX+2*MAR)+' '+(maxY-minY+2*MAR));
+  dopasujPlotno(maxX-minX+2*MAR, maxY-minY+2*MAR, 13);   // czcionka węzła AGR_
   let g='<defs><marker id="gr" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">'+
         '<path d="M0,0 L8,3 L0,6 z" fill="#52677c"/></marker>'+
         '<marker id="grA" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">'+
@@ -1658,15 +1770,13 @@ function rysujSvg(){
       const d1=kraw(ux,uy), d2=d1;
       const px1=x1+ux*d1, py1=y1+uy*d1;
       const px2=x2-ux*d2, py2=y2-uy*d2;
-      const akt = szk ? (k===wybSzk) : (k===stan);
-      const ok  = szk ? false : (akt&&gotowe(p));
+      const akt=(k===stan), ok=akt&&gotowe(p);
       // łuk: wygięcie w lewo względem kierunku jazdy — rozdziela pary tam i z powrotem
       const lx=px2-px1, ly=py2-py1, LL=Math.hypot(lx,ly)||1;
       const nx=-ly/LL, ny=lx/LL;
       const wyg=Math.min(LL*0.18, 52);
       const cx=(px1+px2)/2+nx*wyg, cy=(py1+py2)/2+ny*wyg;
-      const op = szk ? (p.description||'') : opisPrzejscia(k,i,p);
-      const tre = szk ? op : podstaw(op);
+      const tre = podstaw(opisPrzejscia(k,i,p));
       g+='<path d="M '+px1+' '+py1+' Q '+cx+' '+cy+' '+px2+' '+py2+'" fill="none" '+
          'stroke="'+(ok?'#4fb477':(akt?'#7BAFD4':'#3a4a5c'))+'" stroke-width="'+(akt?2.2:1.3)+'" '+
          'marker-end="url(#'+(ok?'grA':'gr')+')" opacity="'+(akt?1:.5)+'">'+
@@ -1674,25 +1784,134 @@ function rysujSvg(){
          (p.after!==undefined?'\n'+T('word.after')+': '+p.after:''))+'</title></path>';
     }
   }
-  // węzły. W szkielecie podświetlony jest WYBRANY stan (niebiesko), a nie bieżący —
-  // szkielet nie ma stanu bieżącego, bo nic w nim nie jest symulowane.
+  // węzły
   for(const k in S){
-    const s=S[k];
-    const akt = szk ? (k===wybSzk) : (k===stan);
-    const awa = szk ? !!S[k].fault : jestAwaria(k);
-    let kol='#2b3a49', txt='#cfe0ee';
-    if(akt){
-      if(szk){ kol='#7BAFD4'; txt='#0d1922'; }
-      else { kol = awa?'#e05c4b':'#F7A800'; txt = awa?'#2a0d08':'#2a1d00'; }
-    } else if(szk && awa){ kol='#33242a'; }
-    const opis = szk ? (S[k].description||'') : (podstaw(opisStanu(k))||k);
-    const klik = szk ? ' style="cursor:pointer" onclick="wybierzSzk(\''+k+'\')"' : '';
-    g+='<g'+klik+'><rect x="'+s.x+'" y="'+s.y+'" width="'+W+'" height="'+H+'" rx="10" '+
-       'fill="'+kol+'" stroke="'+(akt?kol:(szk&&awa?'#6b3b33':'#3a4a5c'))+'" stroke-width="'+(akt?2.5:1.3)+'"/>'+
+    const s=S[k], akt=(k===stan), awa=jestAwaria(k);
+    const kol = akt ? (awa?'#e05c4b':'#F7A800') : '#2b3a49';
+    const txt = akt ? (awa?'#2a0d08':'#2a1d00') : '#cfe0ee';
+    g+='<g><rect x="'+s.x+'" y="'+s.y+'" width="'+W+'" height="'+H+'" rx="10" '+
+       'fill="'+kol+'" stroke="'+(akt?kol:'#3a4a5c')+'" stroke-width="'+(akt?2.5:1.3)+'"/>'+
        '<text x="'+(s.x+W/2)+'" y="'+(s.y+H/2+5)+'" text-anchor="middle" '+
        'font-family="ui-monospace,monospace" font-size="13" font-weight="700" fill="'+txt+'">'+k+'</text>'+
-       '<title>'+esc(opis||k)+'</title></g>';
+       '<title>'+esc(podstaw(opisStanu(k))||k)+'</title></g>';
   }
+  svg.innerHTML=g;
+}
+
+// =====================================================================
+//  SCHEMAT WSPÓŁDZIAŁANIA — trzy maszyny i sprzęgła między nimi.
+//
+//  To NIE jest trzeci graf stanów. Pełny graf każdej warstwy jest czytelny
+//  w YAML-u, a tego, jak one się ze sobą zazębiają, nie widać nigdzie indziej.
+//  Dlatego każda maszyna jest tu pasem z przebiegiem procesu, a cała treść
+//  schematu to TRZY SPRZĘGŁA — rysowane z sekcji `coupling:` w YAML-u,
+//  więc błędne sprzęgło jest widoczne, nie zakopane w komentarzu.
+//
+//  Sprzęgło `store_kg` jest kreskowane celowo: retorta i gazogenerator NIE
+//  wymieniają sygnału. Są sprzężone ZAPASEM — węgiel leży 8 dni na sezonowaniu.
+//  Skala dni, nie sekund, więc między tymi maszynami nie ma przejścia stanu.
+// =====================================================================
+function rysujWspoldzialanie(){
+  const svg=document.getElementById('svg');
+  const L=pasy(); if(!L.length){ svg.innerHTML=''; return; }
+  // Geometria dobrana pod PROPORCJE PANELU, nie pod wygodę pisania: panel jest
+  // bardzo szeroki i niski (ok. 5,6:1), a 10 chipów w rzędzie daje 1660 jednostek
+  // szerokości. Żeby tekst nie zjechał poniżej czytelności, całość musi zmieścić
+  // się w ok. 320 jednostkach wysokości — stąd ciasne pasy i wąskie kanały.
+  const CW=150, CH=31, PITCH=161, ODSTEP_AWARII=24;
+  const ETYK=14, PAD=6, LGAP=95, MAR=10;
+  const poz={}; let maxPrawa=0;
+  L.forEach((p,i)=>{
+    const yb=ETYK+i*LGAP;                       // góra ramki pasa
+    let x=0;
+    p.order.forEach((k)=>{
+      const S=zrodloStanow(p.source);
+      if((S[k]||{}).fault) x+=ODSTEP_AWARII;    // awaria odsunięta — nie należy do przebiegu
+      poz[k]={x:x, y:yb+PAD, pas:i};
+      x+=PITCH;
+    });
+    maxPrawa=Math.max(maxPrawa, x-(PITCH-CW));
+  });
+  const dolOstatniego = ETYK+(L.length-1)*LGAP+CH+2*PAD;
+  const yWsp = dolOstatniego+11;
+  let g='<defs>'+
+    '<marker id="wsA" markerWidth="8" markerHeight="8" refX="7" refY="2.7" orient="auto">'+
+      '<path d="M0,0 L7,2.7 L0,5.4 z" fill="#7BAFD4"/></marker>'+
+    '<marker id="wsI" markerWidth="8" markerHeight="8" refX="7" refY="2.7" orient="auto">'+
+      '<path d="M0,0 L7,2.7 L0,5.4 z" fill="#e0a14b"/></marker>'+
+    '<marker id="wsS" markerWidth="7" markerHeight="7" refX="6" refY="2.3" orient="auto">'+
+      '<path d="M0,0 L6,2.3 L0,4.6 z" fill="#4a5e74"/></marker></defs>';
+
+  L.forEach((p,i)=>{
+    const yb=ETYK+i*LGAP, zywy=(p.source==='state_machine');
+    const S=zrodloStanow(p.source);
+    // etykieta NAD ramką, nie w niej
+    // prefiks z lewej, opis z PRAWEJ: pionowe odcinki sprzęgieł schodzą przy
+    // lewych kolumnach i przecinałyby opis umieszczony obok prefiksu
+    g+='<text x="2" y="'+(yb-5)+'" font-family="ui-monospace,monospace" font-size="11" '+
+       'font-weight="700" fill="'+(zywy?'#F7A800':'#8da0b3')+'">'+esc(p.layer)+'</text>'+
+       '<text x="'+(maxPrawa+8)+'" y="'+(yb-5)+'" text-anchor="end" font-size="10.5" '+
+       'fill="#687c90">'+esc(p.label||'')+'</text>';
+    g+='<rect x="-10" y="'+yb+'" width="'+(maxPrawa+20)+'" height="'+(CH+2*PAD)+'" rx="10" '+
+       'fill="'+(zywy?'#172029':'#19212a')+'" stroke="'+(zywy?'#3a4e63':'#2a3742')+'" stroke-width="1.2"/>';
+    p.order.forEach((k,j)=>{
+      const v=S[k]||{}, x=poz[k].x, y=poz[k].y;
+      const awa=!!v.fault, wyb=(k===wybSzk), biez=(zywy&&k===stan);
+      const tlo = wyb?'#7BAFD4' : (awa?'#2e2026' : (biez?'#F7A800':'#222e3b'));
+      const kol = wyb?'#0d1922' : (biez?'#2a1d00' : (awa?'#cf9b92':'#cfe0ee'));
+      const obr = wyb?'#7BAFD4' : (awa?'#6b3b33':'#33455a');
+      g+='<g style="cursor:pointer" onclick="wybierzSzk(\''+k+'\')">'+
+         '<rect x="'+x+'" y="'+y+'" width="'+CW+'" height="'+CH+'" rx="7" fill="'+tlo+'" '+
+         'stroke="'+obr+'" stroke-width="'+(wyb?2.2:1.1)+'"/>'+
+         '<text x="'+(x+CW/2)+'" y="'+(y+CH/2+4)+'" text-anchor="middle" '+
+         'font-family="ui-monospace,monospace" font-size="10.5" font-weight="700" fill="'+kol+'">'+esc(k)+'</text>'+
+         '<title>'+esc(v.description ? (zywy?podstaw(opisStanu(k)):v.description) : k)+'</title></g>';
+      const nast=p.order[j+1];
+      if(nast && !(S[nast]||{}).fault){
+        g+='<line x1="'+(x+CW+2)+'" y1="'+(y+CH/2)+'" x2="'+(poz[nast].x-3)+'" y2="'+(y+CH/2)+'" '+
+           'stroke="#3f5366" stroke-width="1.1" marker-end="url(#wsS)"/>';
+      }
+    });
+  });
+
+  // Sprzęgła prowadzone kanałami MIĘDZY pasami. Kanały rozsunięte, żeby
+  // gas_ready i engine_drawing nie nałożyły się etykietami w tym samym korytarzu.
+  const KAN={ store_kg:ETYK+LGAP-33, gas_ready:ETYK+2*LGAP-35, engine_drawing:ETYK+2*LGAP-17 };
+  sprzegla().forEach(l=>{
+    const a=poz[l.from], b=poz[l.to]; if(!a||!b) return;
+    const inw=(l.kind==='inventory'), kolor=inw?'#e0a14b':'#7BAFD4';
+    const kan=KAN[l.signal]!==undefined?KAN[l.signal]:(dolOstatniego+8);
+    const wDol=(b.pas>a.pas);
+    const ax=a.x+CW/2, bx=b.x+CW/2;
+    const ay=wDol?(a.y+CH):a.y, by=wDol?b.y:(b.y+CH);
+    g+='<path d="M '+ax+' '+ay+' L '+ax+' '+kan+' L '+bx+' '+kan+' L '+bx+' '+(by+(wDol?-4:4))+'" '+
+       'fill="none" stroke="'+kolor+'" stroke-width="1.5" '+
+       (inw?'stroke-dasharray="6 4" ':'')+'marker-end="url(#'+(inw?'wsI':'wsA')+')">'+
+       '<title>'+esc(l.from+' → '+l.to+'\n'+l.signal+(l.delay?'  ('+l.delay+')':'')+
+       '\n\n'+(l.description||''))+'</title></path>';
+    const et=l.signal+(l.delay?' · '+l.delay:'')+(inw?'  ['+T('word.inventory')+']':'');
+    const szer=et.length*5.8+14, ex=Math.max(szer/2, Math.min(maxPrawa-szer/2, (ax+bx)/2));
+    g+='<rect x="'+(ex-szer/2)+'" y="'+(kan-8.5)+'" width="'+szer+'" height="17" rx="5" '+
+       'fill="#141b24" stroke="'+kolor+'" stroke-width="1"/>'+
+       '<text x="'+ex+'" y="'+(kan+4)+'" text-anchor="middle" font-family="ui-monospace,monospace" '+
+       'font-size="9.5" font-weight="700" fill="'+kolor+'">'+esc(et)+'</text>';
+  });
+
+  const w=wspolne();
+  if((w.signals||[]).length){
+    g+='<rect x="-10" y="'+yWsp+'" width="'+(maxPrawa+20)+'" height="22" rx="7" '+
+       'fill="#171c25" stroke="#3b4a5c" stroke-width="1.1" stroke-dasharray="5 4"/>'+
+       '<text x="8" y="'+(yWsp+15)+'" font-family="ui-monospace,monospace" font-size="9.5" '+
+       'fill="#7f94a8">'+esc(T('shared.label')+':')+'</text>'+
+       '<text x="'+(8+T('shared.label').length*5.8+14)+'" y="'+(yWsp+15)+'" '+
+       'font-family="ui-monospace,monospace" font-size="9.5" font-weight="700" fill="#9fb4c7">'+
+       esc(w.signals.join('   ·   '))+'</text>'+
+       '<title>'+esc(w.description||'')+'</title>';
+  }
+
+  const vbW=maxPrawa+20+2*MAR, vbH=yWsp+22+MAR+MAR;
+  svg.setAttribute('viewBox', (-10-MAR)+' '+(-MAR)+' '+vbW+' '+vbH);
+  dopasujPlotno(vbW, vbH, 10.5);                         // czcionka chipu schematu
   svg.innerHTML=g;
 }
 let cacheWy=null, cacheLic=null, ostatniStan=null, ostatniSvg='';

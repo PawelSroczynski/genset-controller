@@ -92,6 +92,65 @@ parameters:
                             # 4000 l of near-boiling water in a room full of
                             # electronics.
 
+# =====================================================================
+#  COUPLING — the joint between the three machines, AS DATA.
+#  The interworking diagram in the simulator is rendered from this section,
+#  so a wrong coupling is visible rather than buried in a comment.
+# =====================================================================
+coupling:
+  # Lane order for the interworking diagram. Explicit rather than derived from
+  # key order, because key order in state-machine.yaml follows the diagram
+  # layout, not the process flow. Validated against the state tables: every
+  # entry must exist and every state must appear exactly once.
+  lanes:
+    - layer: RET_
+      label: Pyrolysis retort — charcoal from wood, batch
+      source: states_retort
+      order: [RET_COLD, RET_CHARGING, RET_LIGHTING, RET_DEVOLATILISING, RET_FINISHING,
+              RET_COOLDOWN, RET_DISCHARGING, RET_SEASONING, RET_FAULT]
+    - layer: GAZ_
+      label: Gasifier CXF — water gas from charcoal
+      source: states_gas
+      order: [GAZ_COLD, GAZ_LIGHTING, GAZ_WARMUP, GAZ_FLARE, GAZ_READY,
+              GAZ_PURGE, GAZ_SUPPLYING, GAZ_SHUTDOWN, GAZ_COOLDOWN, GAZ_FAULT]
+    - layer: AGR_
+      label: Genset FH9000R — live machine, simulated in the AGR_ view
+      source: state_machine
+      order: [AGR_READY, AGR_CRANKING, AGR_PAUSE, AGR_RUNNING, AGR_STOPPING, AGR_FAULT]
+  links:
+    - from: GAZ_READY
+      to: AGR_READY
+      signal: gas_ready
+      kind: signal
+      description: >-
+        Widens the AGR_READY exit condition from `gen_request` to
+        `gen_request and gas_ready`. THE ONLY CHANGE TO THE GENSET MACHINE.
+    - from: AGR_RUNNING
+      to: GAZ_PURGE
+      signal: engine_drawing
+      kind: signal
+      description: >-
+        Without the engine drawing, gas does not flow: the reactor idles and the
+        bed cools down. It also gates the purge, after which the engine valve
+        may open.
+    - from: RET_SEASONING
+      to: GAZ_COLD
+      signal: store_kg
+      kind: inventory
+      delay: 8 days
+      description: >-
+        NOT a real-time signal. The retort makes charcoal, it seasons in the
+        open for 8 days, then enters the store; the gasifier draws from the
+        store and its precondition is `store_kg > 0`. The timescale is days,
+        not seconds, so there is no transition between these two machines.
+  shared:
+    signals: [co_alarm, t_pile, t_buffer_top]
+    description: >-
+      These belong to no layer. They are the background all three machines
+      operate in: a CO alarm faults every one of them, pile temperature warns of
+      char self-ignition with nobody's involvement, and buffer temperature caps
+      heat recovery before the EPDM membrane has to work at 80 degC.
+
 counters:
   store_kg:    0   # charcoal fit for use, seasoning complete
   season_kg:   0   # charcoal still seasoning, not yet permitted as fuel
