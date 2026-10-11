@@ -24,7 +24,9 @@ the winter.
 | `state-machine.yaml` | the state machine as data — states, transitions, inputs, outputs, parameters. The canonical definition. |
 | `genset-controller.yaml` | ESPHome configuration for a SMARTBOB SM-MINI-0808R. Implements the same machine in a 100 ms `interval` lambda. |
 | `hybrid-skeleton.yaml` | state skeleton for the gasifier (`GAZ_`) and the retort (`RET_`) layers. `mode: skeleton` — no pins assigned, not flashable. For review on paper. |
-| `index.html` | the simulator. Single file, loads `state-machine.yaml` inline, runs the machine in the browser with a model of the engine. PL/EN. |
+| `plant.yaml` | the installation around the controller: bank, PV, loads, and the Deye with its thresholds. Separate on purpose — `state-machine.yaml` is what gets flashed, this is the world it sits in. |
+| `index.html` | the simulator. Single file, all three YAMLs embedded, runs the machine in the browser with models of the engine and of the plant. PL/EN. |
+| `embed.py` | injects the YAML sources into `index.html`. Run it after touching any of them. |
 
 ## The simulator
 
@@ -47,6 +49,57 @@ a state by its name: a fault state is one carrying `fault: true`, and the engine
 model watches the `starter` and `ignition` outputs rather than the state name.
 That is what lets the gasifier and retort layers be added later without touching
 the simulator's engine.
+
+## The request is not an input
+
+`gen_request` used to be a free input you toggled by hand. It is not an input at
+all: it is an **output of the Deye**, computed from battery SOC with hysteresis.
+The manual is explicit — *"Start = 30%: when battery SOC or voltage drop to this
+set value, the inverter will start the generator"*, and the normally-open Gen
+Signal relay closes at that point. Toggling it modelled the wrong layer.
+
+The real chain is a feedback loop:
+
+```
+cells -> BMS (SOC estimate) -> Deye (Start threshold) -> GS contact
+      -> IN-01 -> AGR_ -> genset -> GEN port -> charges the bank -> cells
+```
+
+So the simulator now models the plant and the operator drives **physical
+conditions** — PV, island load, the PPE3 shower — while the Deye decides and
+IN-01 follows. IN-01 stays clickable: clicking it takes the Deye model offline,
+the same pattern as the engine model.
+
+**The hysteresis is the point.** Start 30 %, stop 80 %. Releasing the contact at
+the start threshold would stop the genset the instant it began to help.
+
+**Which terminal carries the start signal depends on the "Signal ISLAND MODE"
+setting** — ticked it is GS, unticked GV. Island mode is on here, so GS, which
+matches the G-start (1,2) pair. Confirm it on the device.
+
+## Two clocks
+
+A full cycle is about 19 hours: roughly 16 h draining the bank and 3 h charging.
+The state machine runs in real seconds. One clock cannot serve both.
+
+The plant clock runs at 240x while nothing is happening and drops to real time
+the moment the controller has something to show — cranking, the pause, stopping,
+a fault, and the request hold in `AGR_READY`. The multiplier is always on screen.
+The restriction to `AGR_READY` matters: the request stays asserted through the
+whole charging run, and without it the clock sat at 1x for hours of charging.
+
+## What the genset load factor is for
+
+The Deye caps charging at `gen_charge_a`, 40 A by default. At 51.2 V that is
+about 2.05 kW, which is **less than the 3.5 kW the genset makes on water gas**.
+With only the base load running, the simulator shows the genset at **73 % load** —
+part-loaded, which is precisely what a gasifier does not want; it wants long runs
+at full load.
+
+The setting is left at its default on purpose. What it should be has to be
+settled on the inverter, against what the cells accept through the BMS and what
+the three-phase genset can give. The gauge is there to answer that with a number
+rather than an opinion.
 
 ## Language
 

@@ -114,13 +114,16 @@ measurements:
     description: 8 x JA Solar JAM72D30-540/MB, 4.32 kWp on the barn.
 
 # Energy chain shown in the synoptic bar, left to right.
+# The chain now reads in causal order and closes a loop: the phase the genset
+# produces goes back into the bank, which is what asks for it in the first place.
 synoptic:
-  - { id: request, label: request }
+  - { id: pv,      label: PV }
+  - { id: load,    label: load }
+  - { id: bank,    label: bank }
+  - { id: deye,    label: Deye }
+  - { id: request, label: GS contact }
   - { id: engine,  label: engine }
   - { id: phase,   label: phase }
-  - { id: deye,    label: Deye GEN }
-  - { id: bank,    label: bank }
-  - { id: load,    label: load }
 
 inputs:
   gen_request:
