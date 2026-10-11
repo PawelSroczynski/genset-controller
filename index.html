@@ -436,10 +436,11 @@ states_deye:
       PV covers the loads and the surplus charges the bank. The genset contact
       is open. This is where the installation should spend the summer.
     contact: false
-  DEYE_BANK:
+  DEYE_DISCHARGING:
     description: >-
       No surplus. The bank carries the load and SOC falls. Still no request —
-      this is normal night-time operation, not a fault.
+      this is normal night-time operation, not a fault. Named to pair with
+      DEYE_CHARGING: the two are the same quantity with opposite sign.
     contact: false
   DEYE_REQUEST:
     description: >-
@@ -2122,7 +2123,7 @@ function resetPomiary(){
 // =====================================================================
 let PL=null, INST={}, modelDeye=true;
 function resetInstalacji(){
-  INST={ soc:62, stanDeye:'DEYE_BANK', pv_kw:0.0, load_kw:(PL?PL.loads.base_kw:0.5),
+  INST={ soc:62, stanDeye:'DEYE_DISCHARGING', pv_kw:0.0, load_kw:(PL?PL.loads.base_kw:0.5),
          prysznic:0, tInst:0, warp:1 };
   if(PL) POM.soc=INST.soc;
 }
@@ -2147,17 +2148,17 @@ function krokDeye(){
   switch(s){
     case 'DEYE_PV':
       if(INST.soc<=d.gen_start_soc) n='DEYE_REQUEST';
-      else if(!nadwyzka) n='DEYE_BANK'; break;
-    case 'DEYE_BANK':
+      else if(!nadwyzka) n='DEYE_DISCHARGING'; break;
+    case 'DEYE_DISCHARGING':
       if(INST.soc<=d.gen_start_soc) n='DEYE_REQUEST';
       else if(nadwyzka) n='DEYE_PV'; break;
     case 'DEYE_REQUEST':
       // próg STOP, nie START — zwolnienie styku na progu startu zatrzymałoby
       // agregat w chwili, w której zaczął pomagać. To jest ta histereza.
-      if(INST.soc>=d.gen_stop_soc) n = nadwyzka?'DEYE_PV':'DEYE_BANK';
+      if(INST.soc>=d.gen_stop_soc) n = nadwyzka?'DEYE_PV':'DEYE_DISCHARGING';
       else if(praca) n='DEYE_CHARGING'; break;
     case 'DEYE_CHARGING':
-      if(INST.soc>=d.gen_stop_soc) n = nadwyzka?'DEYE_PV':'DEYE_BANK';
+      if(INST.soc>=d.gen_stop_soc) n = nadwyzka?'DEYE_PV':'DEYE_DISCHARGING';
       else if(!praca) n='DEYE_REQUEST'; break;
   }
   if(n!==s){ INST.stanDeye=n; dopisz({typ:'deye', z:s, cel:n, kl:'s'}); }

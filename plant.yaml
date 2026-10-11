@@ -135,10 +135,11 @@ states_deye:
       PV covers the loads and the surplus charges the bank. The genset contact
       is open. This is where the installation should spend the summer.
     contact: false
-  DEYE_BANK:
+  DEYE_DISCHARGING:
     description: >-
       No surplus. The bank carries the load and SOC falls. Still no request —
-      this is normal night-time operation, not a fault.
+      this is normal night-time operation, not a fault. Named to pair with
+      DEYE_CHARGING: the two are the same quantity with opposite sign.
     contact: false
   DEYE_REQUEST:
     description: >-
