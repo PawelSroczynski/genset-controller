@@ -214,12 +214,26 @@ impulse, and mp3 smears it. Measured on the same cut, a peak normalised to
 192 kbps recovered 0.1 dB of it. They are also kept at the full 44.1 kHz, because
 a quarter of the snap's energy sits above 10 kHz.
 
-The first relay sound was cut from a dipswitch recording and it was wrong.
-Measured, it had **no energy at all below 1.5 kHz**, so it read as a tick rather
-than as a contact closing. The replacement has 38 % of its energy between 200 Hz
-and 1.5 kHz — the case, which is what makes a relay audible across a cabinet —
-and a room tail decaying to -35 dB over 70 ms. Pull-in is normalised 1.5 dB
-above release, because a spring returns more weakly than a coil pulls.
+The relay click took three attempts, each settled by measurement. A dipswitch
+recording had **no energy at all below 1.5 kHz** and read as a tick rather than
+a contact closing. An installation light switch had the body but the wrong
+instrument. What the simulator uses now is **the relay of a stereo amplifier**,
+which carries 70 % of its energy between 600 Hz and 1.5 kHz — that band is what
+a relay sounds like across a cabinet.
+
+Pull-in and release are two different clicks from the same recording, chosen so
+that they read as two movements of one device rather than two devices: 70 % and
+54 % of their energy in the same band, decays of 30 and 28 ms. A third click,
+just as clean, was rejected for having only 46 % there. Each cut starts 4 ms
+before the strike, because the armature is already moving by then, and pull-in
+is normalised 1.5 dB above release, because a spring returns more weakly than
+a coil pulls.
+
+That one file does not come from the public domain. The author's terms are
+"free for your non-profit project", with a commercial licence sold separately,
+and this simulator belongs to a foundation — the condition the terms name. The
+source, the terms and the date of that decision are in the header of
+`fetch-sounds.py`. Everything else in `sounds/` is public domain.
 
 Which sound a signal makes is declared in the YAML, not wired into the
 simulator: `sound_loop` plays while the signal is active, `sound_on` and

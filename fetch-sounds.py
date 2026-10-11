@@ -12,15 +12,22 @@ lepsza: są powtarzalne i nie niosą cudzego nagrania.
   https://commons.wikimedia.org/wiki/File:Starting_a_car_and_driving.ogg
   -> rozrusznik, rozruch z zaskokiem, bieg jałowy
 
-  Clickick_switch.ogg              Public domain, autor: stephan
-  https://commons.wikimedia.org/wiki/File:Clickick_switch.ogg
-  -> trzaśnięcie styków, zasysanie zwory i odpadnięcie
+PRZEKAŹNIK — INNE WARUNKI NIŻ RESZTA, czytaj uważnie:
 
-Dipswitch_on_off.ogg, użyty wcześniej na przekaźniki, wyleciał po pomiarze:
-**zero energii poniżej 1,5 kHz** (7,7% w 1,5-4 k, resztę powyżej). Dlatego
-brzmiał jak tyknięcie, nie jak styk. Clickick ma 16-23% w 200-600 Hz i tyle
-samo w 0,6-1,5 kHz, czyli pudło, które słychać w szafie, plus ogon pomieszczenia
-schodzący do -35 dB po 70 ms.
+  Relay Switch Stereo Amplifier Sound Effect, kanał "Sound Effects"
+  https://www.youtube.com/watch?v=HdbGgajdxBw
+  Autor pisze w opisie: "This SFX sound is free for your non-profit project"
+  i sprzedaje licencję komercyjną na audiojungle.net/item/relay-switch/31367137.
+  To NIE jest domena publiczna. Warunek, który autor stawia, jest tu spełniony:
+  symulator jest projektem Fundacji Twórczej, nie produktem. Decyzja Pawła
+  z 11.10, świadoma, po przedstawieniu warunków.
+  -> trzaśnięcie styków: zasysanie 0,569 s, odpadnięcie 3,015 s
+
+Dwie wcześniejsze próby na przekaźniki wyleciały po pomiarze. Dipswitch_on_off
+miał **zero energii poniżej 1,5 kHz** — stąd tyknięcie zamiast styku.
+Clickick_switch miał pudło (16-23% w 200-600 Hz), ale to był pstryczek
+instalacyjny. Przekaźnik ze wzmacniacza ma **57-75% energii w 0,6-1,5 kHz**,
+czyli dokładnie to, czym przekaźnik odzywa się w szafie.
 
 Domena publiczna, a nie CC BY-SA, wybrana świadomie: te pliki idą do
 publicznego repozytorium i na cudzą domenę, więc nie mogą ciągnąć za sobą
@@ -35,7 +42,7 @@ UA  = 'enklava-symulator/1.0 (https://github.com/PawelSroczynski/genset-controll
 
 ZRODLA = {
  'auto': 'https://upload.wikimedia.org/wikipedia/commons/e/eb/Starting_a_car_and_driving.ogg',
- 'click':'https://upload.wikimedia.org/wikipedia/commons/8/8e/Clickick_switch.ogg',
+ 'relay': 'https://www.youtube.com/watch?v=HdbGgajdxBw',   # przez yt-dlp
 }
 
 def pobierz(nazwa, url):
@@ -45,6 +52,20 @@ def pobierz(nazwa, url):
     req = urllib.request.Request(url, headers={'User-Agent': UA})
     with urllib.request.urlopen(req) as r, open(cel,'wb') as f:
         f.write(r.read())
+    return cel
+
+def pobierz_yt(nazwa, url):
+    """Pobiera ścieżkę dźwiękową przez yt-dlp. Osobna funkcja, bo urllib tego
+    nie zrobi, a i warunki są inne niż dla Commons — patrz nagłówek."""
+    os.makedirs(TMP, exist_ok=True)
+    cel = os.path.join(TMP, nazwa+'.wav')
+    if os.path.exists(cel): return cel
+    try:
+        subprocess.run(['yt-dlp','--no-warnings','-x','--audio-format','wav',
+                        '--audio-quality','0','-o',
+                        os.path.join(TMP, nazwa+'.%(ext)s'), url], check=True)
+    except FileNotFoundError:
+        sys.exit('brak yt-dlp — zainstaluj albo zostaw gotowe sounds/relay-*.wav')
     return cel
 
 def wczytaj(plik, od, do):
@@ -92,17 +113,6 @@ def petla(x, zakladka_ms=150):
     out[:o] = x[:o]*np.sqrt(t) + x[L:L+o]*np.sqrt(1-t)
     return out
 
-def przytlum_gore(x, f0=8000.0, db=-6.0):
-    """Ścina górę o `db` powyżej f0, nie ruszając ataku w średnicy.
-    Nagranie pstryczka ma ~30% energii powyżej 10 kHz — to syk mikrofonu,
-    nie styk. Filtr jednobiegunowy, bo ostrzejszy dzwoniłby na transjencie."""
-    a = np.exp(-2*np.pi*f0/SR)
-    lp = np.empty_like(x); y = 0.0
-    for i, v in enumerate(x):
-        y = (1.0-a)*v + a*y
-        lp[i] = y
-    return lp + (10**(db/20.0))*(x - lp)
-
 def krawedzie(x, we_ms=1.0, wy_ms=10.0):
     """Wygasza krawędzie wycinka. Narastanie tylko 1 ms, bo atak trzaśnięcia
     siedzi 6 ms od cięcia — 10 ms jak w mp3 zjadłoby mu zbocze."""
@@ -140,19 +150,27 @@ def zapisz_mp3(nazwa, x, wyc_ms=10, kbps=96):
 
 if __name__ == '__main__':
     os.makedirs(KAT, exist_ok=True)
-    auto  = pobierz('auto',  ZRODLA['auto'])
-    click = pobierz('click', ZRODLA['click'])
+    auto  = pobierz('auto', ZRODLA['auto'])
+    relay = pobierz_yt('relay', ZRODLA['relay'])
 
     # Granice wyznaczone z profilu głośności i jasności widma, nie na oko:
     # do 14,5 s krzątanina, 14,9–16,1 kręcenie (jasność ~1,2 kHz), od 16,1
     # zaskok i spadek jasności do ~300 Hz, 17,6–19,6 równy bieg jałowy.
     WYCINKI = [
-        # Dwa trzaśnięcia w jednym nagraniu: 0,066 s i 0,210 s (atak z profilu
-        # głośności co 2 ms). Cięcie pierwszego kończy się przed 0,20 s, żeby
-        # nie wciągnąć drugiego. Odpadnięcie o 1,5 dB ciszej — sprężyna wraca
-        # słabiej niż cewka zasysa.
-        ('relay-on',     click, 0.060, 0.190, 'click', -1.5),
-        ('relay-off',    click, 0.204, 0.340, 'click', -3.0),
+        # W nagraniu jest osiem trzaśnięć. Te dwa wybrane pomiarem pasma, tak
+        # żeby brzmiały jak JEDEN przekaźnik: 0,569 s ma 75% energii
+        # w 0,6-1,5 kHz i 18% w 200-600 (zasysanie, pełne pudło), 3,015 s ma
+        # 66% w tej samej średnicy i krótszy zanik 24 vs 32 ms (odpadnięcie —
+        # sprężyna wraca twardziej i bez rozkołysu cewki). Trzaśnięcie 6,196 s
+        # odrzucone, choć równie czyste: ma 46% średnicy i resztę wyżej, więc
+        # po parze z pierwszym słychać dwa różne urządzenia, a nie dwa ruchy
+        # jednego.
+        # Cięcie 4 ms przed atakiem (atak znaleziony profilem co 1 ms),
+        # bo przed samym uderzeniem jest jeszcze 4 ms ruszającej zwory.
+        # Następne trzaśnięcie dopiero po 0,5 s, więc 140 ms mieści cały ogon.
+        # Bez ścinania góry: powyżej 10 kHz jest tu 0,7% i 4,6% energii.
+        ('relay-on',     relay, 0.565, 0.705, 'click', -1.5),
+        ('relay-off',    relay, 3.011, 3.151, 'click', -3.0),
         ('engine-start', auto, 14.85, 17.60, 'mp3',   -7.0),
         ('starter',      auto, 14.95, 16.05, 'loop', -10.0),
         # Okno biegu jałowego wybrane POMIAREM, nie na oko: regresja poziomu
@@ -177,7 +195,7 @@ if __name__ == '__main__':
             # i gubi na nim ~3 dB szczytu (zmierzone: -3,0 dB przed kodowaniem,
             # -5,9 dBFS po), a 22 kHz obciąłby górę trzaśnięcia. Plik ma 6 kB,
             # więc nie ma czego oszczędzać.
-            x = norm(krawedzie(przytlum_gore(x)), db)
+            x = norm(krawedzie(x), db)
             p, dl = zapisz_wav(nazwa, x, sr_out=SR)
         elif fmt == 'loop':
             x = norm(petla(x), db)
