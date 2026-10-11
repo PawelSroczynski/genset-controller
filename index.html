@@ -1528,16 +1528,19 @@ function resetPomiary(){
 //  silnika, który nie rozpoznaje stanów po nazwie.
 // =====================================================================
 let AUDIO=null, dzwiekWl=false, ostatniTon=0;
-// Pliki mp3 są projektowane (gen-sounds.py), nie znalezione — dzięki temu nie
-// ciągną za sobą cudzej licencji na publiczne repo i dają się odtworzyć ze
-// skryptu. Synteza niżej zostaje jako zapas: gdyby katalog sounds/ nie dojechał
-// albo przeglądarka odmówiła, dźwięk nadal jest, tylko prostszy.
-const DZW={};
+// Dwa źródła: dzwonki interfejsu są syntezowane (gen-sounds.py), maszyny
+// i przekaźniki wycięte z nagrań w domenie publicznej (fetch-sounds.py).
+// Synteza niżej zostaje jako zapas: gdyby katalog sounds/ nie dojechał albo
+// przeglądarka odmówiła, dźwięk nadal jest, tylko prostszy.
+// WAV, nie mp3, dla trzaśnięć przekaźnika: mp3 rozmazuje impuls i gubi na nim
+// ~3 dB szczytu. SV wymusza pobranie po republikacji — /files/ ma expires 1d.
+const DZW={}, WAVY={'relay-on':1,'relay-off':1}, SV='?v=2';
+function plikDzw(nazwa){ return 'sounds/'+nazwa+(WAVY[nazwa]?'.wav':'.mp3')+SV; }
 function graj(nazwa, glosno){
   if(!dzwiekWl || !nazwa) return false;
   let w=DZW[nazwa];
   if(w===undefined){
-    const a=new Audio('sounds/'+nazwa+'.mp3'); a.preload='auto';
+    const a=new Audio(plikDzw(nazwa)); a.preload='auto';
     w={el:a, ok:true};
     a.addEventListener('error', ()=>{ w.ok=false; });
     DZW[nazwa]=w;
@@ -1568,7 +1571,7 @@ function wczytajPetle(){
     if(BUF[k]!==undefined) return;
     BUF[k]=null;
     // fetch nie działa z file:// — wtedy zostaje element <audio> z loop
-    fetch('sounds/'+k+'.wav').then(r=>{ if(!r.ok) throw 0; return r.arrayBuffer(); })
+    fetch('sounds/'+k+'.wav'+SV).then(r=>{ if(!r.ok) throw 0; return r.arrayBuffer(); })
       .then(ab=>AUDIO.decodeAudioData(ab)).then(b=>{ BUF[k]=b; }).catch(()=>{});
   });
 }
@@ -1583,7 +1586,7 @@ function petlaWl(k, glosno){
     s.connect(g); g.connect(AUDIO.destination); s.start();
     GRAJACE[k]={s:s, g:g};
   } else {
-    if(!ELP[k]){ ELP[k]=new Audio('sounds/'+k+'.wav'); ELP[k].loop=true; }
+    if(!ELP[k]){ ELP[k]=new Audio('sounds/'+k+'.wav'+SV); ELP[k].loop=true; }
     try{ ELP[k].volume=glosno; ELP[k].currentTime=0;
          const p=ELP[k].play(); if(p&&p.catch) p.catch(()=>{}); }catch(e){}
     GRAJACE[k]={el:ELP[k]};

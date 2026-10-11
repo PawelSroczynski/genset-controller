@@ -12,9 +12,15 @@ lepsza: są powtarzalne i nie niosą cudzego nagrania.
   https://commons.wikimedia.org/wiki/File:Starting_a_car_and_driving.ogg
   -> rozrusznik, rozruch z zaskokiem, bieg jałowy
 
-  Dipswitch_on_off.ogg             Public domain, autor: stephan
-  https://commons.wikimedia.org/wiki/File:Dipswitch_on_off.ogg
-  -> zatrzaski przekaźnika, załączenie i odpadnięcie
+  Clickick_switch.ogg              Public domain, autor: stephan
+  https://commons.wikimedia.org/wiki/File:Clickick_switch.ogg
+  -> trzaśnięcie styków, zasysanie zwory i odpadnięcie
+
+Dipswitch_on_off.ogg, użyty wcześniej na przekaźniki, wyleciał po pomiarze:
+**zero energii poniżej 1,5 kHz** (7,7% w 1,5-4 k, resztę powyżej). Dlatego
+brzmiał jak tyknięcie, nie jak styk. Clickick ma 16-23% w 200-600 Hz i tyle
+samo w 0,6-1,5 kHz, czyli pudło, które słychać w szafie, plus ogon pomieszczenia
+schodzący do -35 dB po 70 ms.
 
 Domena publiczna, a nie CC BY-SA, wybrana świadomie: te pliki idą do
 publicznego repozytorium i na cudzą domenę, więc nie mogą ciągnąć za sobą
@@ -29,7 +35,7 @@ UA  = 'enklava-symulator/1.0 (https://github.com/PawelSroczynski/genset-controll
 
 ZRODLA = {
  'auto': 'https://upload.wikimedia.org/wikipedia/commons/e/eb/Starting_a_car_and_driving.ogg',
- 'dip':  'https://upload.wikimedia.org/wikipedia/commons/0/00/Dipswitch_on_off.ogg',
+ 'click':'https://upload.wikimedia.org/wikipedia/commons/8/8e/Clickick_switch.ogg',
 }
 
 def pobierz(nazwa, url):
@@ -62,6 +68,26 @@ def petla(x, zakladka_ms=150):
     out[:o] = x[:o]*np.sqrt(t) + x[L:L+o]*np.sqrt(1-t)
     return out
 
+def przytlum_gore(x, f0=8000.0, db=-6.0):
+    """Ścina górę o `db` powyżej f0, nie ruszając ataku w średnicy.
+    Nagranie pstryczka ma ~30% energii powyżej 10 kHz — to syk mikrofonu,
+    nie styk. Filtr jednobiegunowy, bo ostrzejszy dzwoniłby na transjencie."""
+    a = np.exp(-2*np.pi*f0/SR)
+    lp = np.empty_like(x); y = 0.0
+    for i, v in enumerate(x):
+        y = (1.0-a)*v + a*y
+        lp[i] = y
+    return lp + (10**(db/20.0))*(x - lp)
+
+def krawedzie(x, we_ms=1.0, wy_ms=10.0):
+    """Wygasza krawędzie wycinka. Narastanie tylko 1 ms, bo atak trzaśnięcia
+    siedzi 6 ms od cięcia — 10 ms jak w mp3 zjadłoby mu zbocze."""
+    x = x.copy()
+    a, b = int(SR*we_ms/1000.0), int(SR*wy_ms/1000.0)
+    if len(x) > a+b:
+        x[:a] *= np.linspace(0, 1, a); x[-b:] *= np.linspace(1, 0, b)
+    return x
+
 def norm(x, db):
     x = x - np.mean(x)
     return x/(np.max(np.abs(x)) or 1.0)*(10**(db/20.0))
@@ -75,7 +101,7 @@ def zapisz_wav(nazwa, x, sr_out=22050):
         w.writeframes((xi*32767).astype('<i2').tobytes())
     return p, n/float(sr_out)
 
-def zapisz_mp3(nazwa, x, wyc_ms=10):
+def zapisz_mp3(nazwa, x, wyc_ms=10, kbps=96):
     k = int(SR*wyc_ms/1000.0)
     if len(x) > 2*k:
         x[:k] *= np.linspace(0,1,k); x[-k:] *= np.linspace(1,0,k)
@@ -84,28 +110,39 @@ def zapisz_mp3(nazwa, x, wyc_ms=10):
     p = os.path.join(KAT, nazwa+'.mp3')
     subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-y','-f','s16le',
                     '-ar',str(SR),'-ac','1','-i',sur,'-codec:a','libmp3lame',
-                    '-b:a','96k', p], check=True)
+                    '-b:a','%dk'%kbps, p], check=True)
     os.remove(sur)
     return p, len(x)/float(SR)
 
 if __name__ == '__main__':
     os.makedirs(KAT, exist_ok=True)
-    auto = pobierz('auto', ZRODLA['auto'])
-    dip  = pobierz('dip',  ZRODLA['dip'])
+    auto  = pobierz('auto',  ZRODLA['auto'])
+    click = pobierz('click', ZRODLA['click'])
 
     # Granice wyznaczone z profilu głośności i jasności widma, nie na oko:
     # do 14,5 s krzątanina, 14,9–16,1 kręcenie (jasność ~1,2 kHz), od 16,1
     # zaskok i spadek jasności do ~300 Hz, 17,6–19,6 równy bieg jałowy.
     WYCINKI = [
-        ('relay-on',     dip,  0.12, 0.46, 'mp3',  -6.0),
-        ('relay-off',    dip,  2.00, 2.42, 'mp3',  -7.0),
-        ('engine-start', auto, 14.85, 17.60, 'mp3',  -7.0),
-        ('starter',      auto, 14.95, 16.05, 'wav', -10.0),
-        ('engine',       auto, 17.60, 19.75, 'wav', -12.0),
+        # Dwa trzaśnięcia w jednym nagraniu: 0,066 s i 0,210 s (atak z profilu
+        # głośności co 2 ms). Cięcie pierwszego kończy się przed 0,20 s, żeby
+        # nie wciągnąć drugiego. Odpadnięcie o 1,5 dB ciszej — sprężyna wraca
+        # słabiej niż cewka zasysa.
+        ('relay-on',     click, 0.060, 0.190, 'click', -1.5),
+        ('relay-off',    click, 0.204, 0.340, 'click', -3.0),
+        ('engine-start', auto, 14.85, 17.60, 'mp3',   -7.0),
+        ('starter',      auto, 14.95, 16.05, 'loop', -10.0),
+        ('engine',       auto, 17.60, 19.75, 'loop', -12.0),
     ]
     for nazwa, zrodlo, od, do, fmt, db in WYCINKI:
         x = wczytaj(zrodlo, od, do)
-        if fmt == 'wav':
+        if fmt == 'click':
+            # Jednostrzał w WAV i w pełnym 44,1 kHz. Mp3 rozmazuje impuls
+            # i gubi na nim ~3 dB szczytu (zmierzone: -3,0 dB przed kodowaniem,
+            # -5,9 dBFS po), a 22 kHz obciąłby górę trzaśnięcia. Plik ma 6 kB,
+            # więc nie ma czego oszczędzać.
+            x = norm(krawedzie(przytlum_gore(x)), db)
+            p, dl = zapisz_wav(nazwa, x, sr_out=SR)
+        elif fmt == 'loop':
             x = norm(petla(x), db)
             p, dl = zapisz_wav(nazwa, x)
         else:

@@ -171,7 +171,7 @@ on command.
 Muted by default, toggled from the footer. The machines have recordings, the
 interface has synthesis, and the split is deliberate.
 
-Starter, engine and relay latches are cut from **public-domain recordings** on
+Starter, engine and relay snaps are cut from **public-domain recordings** on
 Wikimedia Commons by `fetch-sounds.py`, which records the source URLs and the
 licence check in its own header. Public domain rather than CC BY-SA on purpose:
 these files go into a public repository and onto someone else's domain, so they
@@ -186,6 +186,19 @@ audible as a regular click. The loop point is crossfaded with an equal-power
 curve, and the files are cut to a whole number of cycles — the starter loop runs
 at 2.5 Hz, which is a single-cylinder compressing once every two revolutions at
 cranking speed, and the engine loop at 25 Hz.
+
+The relay snaps are WAV as well, for a different reason: a contact snap is an
+impulse, and mp3 smears it. Measured on the same cut, a peak normalised to
+-3.0 dB came back at -5.9 dBFS after encoding, and raising the bitrate to
+192 kbps recovered 0.1 dB of it. They are also kept at the full 44.1 kHz, because
+a quarter of the snap's energy sits above 10 kHz.
+
+The first relay sound was cut from a dipswitch recording and it was wrong.
+Measured, it had **no energy at all below 1.5 kHz**, so it read as a tick rather
+than as a contact closing. The replacement has 38 % of its energy between 200 Hz
+and 1.5 kHz — the case, which is what makes a relay audible across a cabinet —
+and a room tail decaying to -35 dB over 70 ms. Pull-in is normalised 1.5 dB
+above release, because a spring returns more weakly than a coil pulls.
 
 Which sound a signal makes is declared in the YAML, not wired into the
 simulator: `sound_loop` plays while the signal is active, `sound_on` and
