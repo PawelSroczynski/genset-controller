@@ -1156,14 +1156,14 @@ const I18N = {
       'card.state':       'Current state',
       'card.log':         'Event log',
       'modal.title':      'State machine definition',
-      'log.reset':        '\u2014 simulation reset \u2014',
-      'log.cycleClosed':  'cycle closed',
-      'log.filter':       '[filter]',
-      'log.noCatch':      '[model] no run confirmation on this attempt',
-      'log.catch':        '[model] run confirmed after',
-      'log.manual':       '[model] OFF \u2014 manual override',
-      'log.modelOn':      '[model] ON',
-      'log.modelOff':     '[model] OFF \u2014 manual control',
+      'log.reset':        'RESET',
+      'log.cycleClosed':  'CYCLE',
+      'log.filter':       '(filter)',
+      'log.noCatch':      'MODEL no run confirmation',
+      'log.catch':        'MODEL run confirmed in',
+      'log.manual':       'MODEL engine OFF, manual control',
+      'log.modelOn':      'MODEL engine ON',
+      'log.modelOff':     'MODEL engine OFF',
       'model.label':      'Engine model',
       'model.description':'Simulation layer. Generates the run confirmation and its loss in place of a physical engine.',
       'counter.time':     'time in state',
@@ -1179,6 +1179,8 @@ const I18N = {
       'word.phase':       'same vessel, phase handover',
       'syn.pv':           'PV',
       'syn.request':      'GS contact',
+      'log.copyHint':     'Click to copy the whole log',
+      'log.copied':       'COPIED, lines:',
       'log.gsClosed':     'GS contact closed — genset requested',
       'log.gsOpen':       'GS contact open — no request',
       'plant.header':     'INSTALLATION',
@@ -1188,15 +1190,15 @@ const I18N = {
       'plant.shower':     'PPE3 shower',
       'plant.showerNote': '9 kW on three phases for 8 minutes. The binding constraint of the whole installation.',
       'plant.showerBtn':  'run shower',
-      'plant.showerLog':  '[plant] PPE3 shower on, 9 kW',
+      'plant.showerLog':  'PLANT PPE3 shower ON 9 kW',
       'plant.deyeModel':  'Deye model',
       'plant.deyeNote':   'Drives IN-01 from SOC with hysteresis: closes at Start, releases at Stop. Click IN-01 to take over by hand.',
-      'plant.deyeOn':     '[plant] Deye model ON',
-      'plant.deyeOff':    '[plant] Deye model OFF — IN-01 by hand',
+      'plant.deyeOn':     'PLANT Deye model ON',
+      'plant.deyeOff':    'PLANT Deye model OFF, IN-01 by hand',
       'plant.bankClick':  'Click to drain the bank to one point above the Start threshold. A shortcut past the dozen hours of discharging, so the request closing can be watched.',
-      'plant.bankLog':    '[plant] bank set just above the Start threshold:',
+      'plant.bankLog':    'PLANT bank above Start threshold',
       'plant.bankClickStop': 'Charging. Click to fill the bank to one point below the Stop threshold, so the contact releasing can be watched without waiting out the charge.',
-      'plant.bankLogStop':   '[plant] bank set just below the Stop threshold:',
+      'plant.bankLogStop':   'PLANT bank below Stop threshold',
       'plant.warp':       'plant',
       'plant.realtime':   'real time',
 
@@ -1242,14 +1244,14 @@ const I18N = {
       'card.state':       'Stan bieżący',
       'card.log':         'Dziennik zdarzeń',
       'modal.title':      'Definicja maszyny stanów',
-      'log.reset':        '— reset symulacji —',
-      'log.cycleClosed':  'cykl zamknięty',
-      'log.filter':       '[filtr]',
-      'log.noCatch':      '[model] brak potwierdzenia pracy w tej próbie',
-      'log.catch':        '[model] potwierdzenie pracy po',
-      'log.manual':       '[model] OFF — przejęcie ręczne',
-      'log.modelOn':      '[model] ON',
-      'log.modelOff':     '[model] OFF — sterowanie ręczne',
+      'log.reset':        'RESET',
+      'log.cycleClosed':  'CYKL',
+      'log.filter':       '(filtr)',
+      'log.noCatch':      'MODEL brak potwierdzenia pracy',
+      'log.catch':        'MODEL potwierdzenie pracy za',
+      'log.manual':       'MODEL silnika OFF, sterowanie ręczne',
+      'log.modelOn':      'MODEL silnika ON',
+      'log.modelOff':     'MODEL silnika OFF',
       'model.label':      'Model silnika',
       'model.description':'Warstwa symulacji. Generuje potwierdzenie pracy i jego zanik zamiast fizycznego silnika.',
       'counter.time':     'czas w stanie',
@@ -1265,6 +1267,8 @@ const I18N = {
       'word.phase':       'to samo urządzenie, zmiana fazy',
       'syn.pv':           'PV',
       'syn.request':      'styk GS',
+      'log.copyHint':     'Kliknij, żeby skopiować cały dziennik',
+      'log.copied':       'SKOPIOWANO, wierszy:',
       'log.gsClosed':     'styk GS zwarty — żądanie pracy agregatu',
       'log.gsOpen':       'styk GS rozwarty — brak żądania',
       'plant.header':     'INSTALACJA',
@@ -1274,15 +1278,15 @@ const I18N = {
       'plant.shower':     'Prysznic PPE3',
       'plant.showerNote': '9 kW na trzech fazach przez 8 minut. Ograniczenie wiążące całej instalacji.',
       'plant.showerBtn':  'puść prysznic',
-      'plant.showerLog':  '[instalacja] prysznic PPE3 włączony, 9 kW',
+      'plant.showerLog':  'INSTALACJA prysznic PPE3 ON 9 kW',
       'plant.deyeModel':  'Model Deye',
       'plant.deyeNote':   'Prowadzi IN-01 z SOC, z histerezą: zwiera na progu Start, zwalnia na Stop. Kliknij IN-01, żeby przejąć ręcznie.',
-      'plant.deyeOn':     '[instalacja] model Deye ON',
-      'plant.deyeOff':    '[instalacja] model Deye OFF — IN-01 ręcznie',
+      'plant.deyeOn':     'INSTALACJA model Deye ON',
+      'plant.deyeOff':    'INSTALACJA model Deye OFF, IN-01 ręcznie',
       'plant.bankClick':  'Kliknij, żeby rozładować bank do progu Start +1 %. Skrót przez kilkanaście godzin rozładowania, żeby dało się obejrzeć samo zwarcie styku.',
-      'plant.bankLog':    '[instalacja] bank ustawiony tuż nad progiem Start:',
+      'plant.bankLog':    'INSTALACJA bank nad progiem Start',
       'plant.bankClickStop': 'Trwa ładowanie. Kliknij, żeby naładować bank do progu Stop −1 %, i obejrzeć rozwarcie styku bez czekania na całe ładowanie.',
-      'plant.bankLogStop':   '[instalacja] bank ustawiony tuż pod progiem Stop:',
+      'plant.bankLogStop':   'INSTALACJA bank pod progiem Stop',
       'plant.warp':       'instalacja',
       'plant.realtime':   'czas rzeczywisty',
 
@@ -1826,6 +1830,7 @@ function ustawJezyk(l){
   document.querySelectorAll('[data-i18n]').forEach(e=>{ e.textContent=T(e.dataset.i18n); });
   document.getElementById('tempo').title=T('tempo.title');
   const lr=document.getElementById('linkRepo'); lr.href=REPO; lr.title=T('link.github');
+  const lg0=document.getElementById('log'); if(lg0) lg0.title=T('log.copyHint');
   document.querySelectorAll('.jezyk button').forEach(b=>b.classList.toggle('akt',b.dataset.lang===l));
   zapiszJezyk(l);
   const bd=document.getElementById('szkBadge');
@@ -1999,27 +2004,45 @@ function migawka(){ return Object.assign({}, lic, M?M.parameters:{}); }
 function podstawZ(s, snap){
   return String(s).replace(/\{(\w+)\}/g,(m,k)=> (snap&&snap[k]!==undefined) ? snap[k] : m);
 }
+// Format diagnostyczny, nie narracyjny. Bez nawiasów, kropek rozdzielających
+// i myślników ozdobnych — serwisant ma czytać zdarzenia, a nie interpunkcję.
+// Strzałki ▲ ▼ zostają, bo niosą treść: zbocze narastające i opadające.
+// Czas wyrównany DO LEWEJ, dopełniony do stałej szerokości, żeby kolumny stały.
+function pinIEtyk(grupa,k){
+  const o=(M[grupa]||{})[k]||{};
+  return { pin:(o.pin||k), etyk:etykPinu(grupa,k) };
+}
 function tekstWpisu(e){
   switch(e.typ){
     case 'reset': return T('log.reset');
-    case 'pin':   return (e.v?'▲ ':'▼ ')+opisPinu(e.grupa,e.k)+(e.v?' — ON':' — OFF');
-    case 'filtr': return (e.v?'▲ ':'▼ ')+T('log.filter')+' '+opisPinu(e.grupa,e.k)+(e.v?' — ON':' — OFF');
+    case 'pin': {
+      const o=pinIEtyk(e.grupa,e.k);
+      return (e.v?'▲ ':'▼ ')+o.pin+' '+(e.v?'ON':'OFF')+'  '+o.etyk;
+    }
+    case 'filtr': {
+      const o=pinIEtyk(e.grupa,e.k);
+      return (e.v?'▲ ':'▼ ')+o.pin+' '+(e.v?'ON':'OFF')+'  '+o.etyk+' '+T('log.filter');
+    }
     case 'przejscie': {
       const p=((M.states[e.z]||{}).transitions||[])[e.i];
       const op = p ? opisPrzejscia(e.z,e.i,p) : '';
-      return e.z+' → '+e.cel+(op?'  · '+podstawZ(op,e.snap):'');
+      return e.z+' > '+e.cel+(op?'  '+podstawZ(op,e.snap):'');
     }
-    case 'deye':  return 'DEYE '+e.z+' → '+e.cel+'  · '+
-      ((PL&&PL.states_deye[e.cel]&&PL.states_deye[e.cel].contact)
-        ? T('log.gsClosed') : T('log.gsOpen'));
-    case 'cykl':  return T('log.cycleClosed')+' — '+e.s+' s';
+    case 'deye':  return e.z+' > '+e.cel+'  '+
+      ((PL&&PL.states_deye[e.cel]&&PL.states_deye[e.cel].contact) ? 'GS ON' : 'GS OFF');
+    case 'cykl':  return T('log.cycleClosed')+' '+e.s+' s';
     case 'model': return e.co==='catch' ? T('log.catch')+' '+e.s+' s' : T('log.'+e.co);
     default: return e.txt||'';
   }
 }
 function wierszDz(e){
-  return '<span class="t">['+e.t.toFixed(1).padStart(6)+'s]</span> '+
-    (e.kl?'<span class="'+e.kl+'">'+esc(tekstWpisu(e))+'</span>':esc(tekstWpisu(e)));
+  const tr=tekstWpisu(e);
+  return '<span class="t">'+e.t.toFixed(1).padEnd(7)+'</span>'+
+    (e.kl?'<span class="'+e.kl+'">'+esc(tr)+'</span>':esc(tr));
+}
+// Czysty tekst całego dziennika — to idzie do schowka
+function tekstDziennika(){
+  return DZIENNIK.map(e=>e.t.toFixed(1).padEnd(7)+tekstWpisu(e)).join('\n');
 }
 function dopisz(e){
   e.t=t;
@@ -2858,6 +2881,33 @@ function ustawGre(v){
     petla=setInterval(()=>tik(0.1*mn),100);
   }
 }
+// file:// i konteksty bez HTTPS potrafią odmówić dostępu do schowka
+function awaryjneKopiuj(txt, ok){
+  const ta=document.createElement('textarea');
+  ta.value=txt; ta.style.position='fixed'; ta.style.top='-1000px';
+  document.body.appendChild(ta); ta.select();
+  try{ document.execCommand('copy'); ok(); }catch(e){}
+  document.body.removeChild(ta);
+}
+// Kliknięcie w dziennik kopiuje go w całości. Zaznaczanie tekstu ma nadal
+// działać, więc kopiujemy tylko wtedy, gdy nic nie jest zaznaczone.
+(function(){
+  const el=document.getElementById('log'); if(!el) return;
+  el.style.cursor='copy';
+  el.onclick=()=>{
+    let zazn=''; try{ zazn=String(window.getSelection()); }catch(e){}
+    if(zazn.trim()) return;
+    const txt=tekstDziennika();
+    const udalo=()=>{
+      const h=el.closest('.karta').querySelector('h2');
+      h.textContent=T('log.copied')+' '+DZIENNIK.length;
+      setTimeout(()=>{ h.textContent=T('card.log'); }, 1600);
+    };
+    if(navigator.clipboard && navigator.clipboard.writeText)
+      navigator.clipboard.writeText(txt).then(udalo, ()=>awaryjneKopiuj(txt,udalo));
+    else awaryjneKopiuj(txt,udalo);
+  };
+})();
 document.getElementById('bYaml').onclick=()=>document.getElementById('modal').classList.add('otw');
 document.getElementById('bZamknij').onclick=()=>document.getElementById('modal').classList.remove('otw');
 document.getElementById('modal').onclick=(e)=>{ if(e.target.id==='modal') e.target.classList.remove('otw'); };
