@@ -409,6 +409,13 @@ sounds:
   running: { loop: engine, up: engine-start, down: engine-stop }
   starter: { loop: starter }
 
+# Relays whose hold time is worth watching get a seconds counter in the row.
+# The kill relay is on the list because its hold IS the requirement: a short
+# lasting only as long as a button press is the defect the relay removes.
+# The ignition relay is not, because it stays energised for the whole charging
+# run and the number would be noise.
+hold_counter: [kill]
+
 # External hardware a signal depends on, linked from the input panel.
 devices:
   running:
@@ -910,6 +917,10 @@ textarea{flex:1 1 auto;min-height:300px;background:#0f151c;color:#cfe0ee;border:
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .wy-stan{font-family:ui-monospace,monospace;font-size:11.5px;font-weight:700;
   flex:0 0 auto;color:#5f7287;letter-spacing:.5px;width:30px;text-align:right}
+/* Licznik trzymania. Pusty, dopóki przekaźnik nie jest wzbudzony, więc wiersz
+   w spoczynku wygląda jak każdy inny. */
+.wy-czas{font-family:ui-monospace,monospace;font-size:10.5px;font-weight:700;
+  flex:0 0 auto;color:var(--amber);width:44px;text-align:right;letter-spacing:.2px}
 
 /* liczniki przeniesione pod nazwę stanu — tam mają znaczenie */
 .stan-liczniki{display:flex;gap:6px 15px;flex-wrap:wrap;margin:5px 0 7px;
@@ -1218,7 +1229,7 @@ function resetuj(){
   // migawka startowa — bez niej pierwszy tick zgłosiłby wszystkie piny jako zmienione
   poprzWe={}; for(const k in (M.inputs||{})) poprzWe[k]=!!we[k];
   poprzF={};  for(const k in (M.inputs||{})) poprzF[k]=!!weF[k];
-  wyEf={}; opoznWy={}; krokWyjsc(0);
+  wyEf={}; opoznWy={}; czasWy={}; krokWyjsc(0);
   poprzWy={}; const w0=wyjsciaTeraz();
   for(const k in (M.outputs||{})) poprzWy[k]=!!w0[k];
   wszystkiePetleWyl();
@@ -1362,7 +1373,7 @@ function wyjsciaStanu(){ return (M.states[stan]||{}).outputs || {}; }
 // `delay_on`: zapłon musi się ustalić, zanim ruszy rozrusznik. Zbocze
 // narastające czeka, opadające działa natychmiast — ta sama asymetria co
 // w filtrze wejścia, i z tego samego powodu.
-let wyEf={}, opoznWy={};
+let wyEf={}, opoznWy={}, czasWy={};
 function limitOpoznienia(k){
   const d=((M.outputs||{})[k]||{}).delay_on;
   if(d===undefined||d===null) return null;
@@ -1372,9 +1383,12 @@ function krokWyjsc(dt){
   const dekl=wyjsciaStanu();
   for(const k in (M.outputs||{})){
     const chce=!!dekl[k], lim=limitOpoznienia(k);
-    if(lim===null||lim===undefined){ wyEf[k]=chce; opoznWy[k]=0; continue; }
-    if(!chce){ wyEf[k]=false; opoznWy[k]=0; }
+    if(lim===null||lim===undefined){ wyEf[k]=chce; opoznWy[k]=0; }
+    else if(!chce){ wyEf[k]=false; opoznWy[k]=0; }
     else if(!wyEf[k]){ opoznWy[k]=(opoznWy[k]||0)+dt; if(opoznWy[k]>=lim) wyEf[k]=true; }
+    // Ile sekund przekaźnik jest wzbudzony. Zeruje się na odpadnięciu, więc
+    // pokazuje czas TEGO wzbudzenia, nie sumę.
+    czasWy[k] = wyEf[k] ? (czasWy[k]||0)+dt : 0;
   }
   return wyEf;
 }
@@ -1930,14 +1944,17 @@ function budujWyjscia(){
     // pełna nazwa i opis w dymku — wiersz ma być jednoliniowy, bo przekaźników
     // będzie dziesięć, gdy dojdzie gazogenerator i retorta
     d.title=pelna+(opis?'\n\n'+podstaw(opis):'');
+    const zLicznikiem=((PL&&PL.hold_counter)||[]).indexOf(k)>=0;
     d.innerHTML=
       '<div class="dioda"></div>'+
       (o.pin?'<span class="wy-pin">'+esc(o.pin)+'</span>':'')+
       '<div class="wy-nazwa">'+esc(krotka)+'</div>'+
-      '<div class="wy-stan">OFF</div>';
+      '<div class="wy-stan">OFF</div>'+
+      (zLicznikiem?'<div class="wy-czas"></div>':'');
     c.appendChild(d);
     cacheWy[k]={ wiersz:d, dioda:d.querySelector('.dioda'),
-                 stan:d.querySelector('.wy-stan') };
+                 stan:d.querySelector('.wy-stan'),
+                 czas:d.querySelector('.wy-czas') };
   }
 }
 let cachePom=null;
@@ -2118,6 +2135,7 @@ function odswiez(){
     c.dioda.style.boxShadow    = v ? '0 0 9px #4fb477' : 'none';
     c.stan.style.color         = v ? '#4fb477' : '#5f7287';
     c.stan.textContent = v ? 'ON' : 'OFF';
+    if(c.czas) c.czas.textContent = v ? (czasWy[k]||0).toFixed(1)+' s' : '';
   }
 
   odswiezPomiary();

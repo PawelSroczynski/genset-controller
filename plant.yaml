@@ -218,6 +218,13 @@ sounds:
   running: { loop: engine, up: engine-start, down: engine-stop }
   starter: { loop: starter }
 
+# Relays whose hold time is worth watching get a seconds counter in the row.
+# The kill relay is on the list because its hold IS the requirement: a short
+# lasting only as long as a button press is the defect the relay removes.
+# The ignition relay is not, because it stays energised for the whole charging
+# run and the number would be noise.
+hold_counter: [kill]
+
 # External hardware a signal depends on, linked from the input panel.
 devices:
   running:

@@ -47,9 +47,14 @@ ethernet:
   type: LAN8720
   mdc_pin: GPIO23
   mdio_pin: GPIO18
-  clk_mode: GPIO17_OUT
+  clk:                 # `clk_mode: GPIO17_OUT` is removed in ESPHome 2026.11
+    mode: CLK_OUT
+    pin: 17
   phy_addr: 0
 
+# GPIO15, GPIO5 and GPIO12 are strapping pins and ESPHome warns about all three
+# on every build. The warning is expected and stays visible: these are the
+# vendor's own pins from the spreadsheet, not a choice of ours.
 i2c:
   - id: bus_a
     sda: 15
