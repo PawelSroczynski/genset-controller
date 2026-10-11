@@ -10,10 +10,12 @@ mode asks for the generator by closing its G-start dry contact. The controller
 sits between the two: it reads that contact, cranks within safe limits, and stops
 the engine by shorting the ignition to ground when the request goes away.
 
-Longer term the generator runs on **water gas** from a charcoal gasifier
-(ThriveOffgrid CXF CrossFire), with charcoal made in a pyrolysis retort on site.
-Charcoal is the seasonal energy store: PV covers the day, LiFePO4 carries the
-night, charcoal carries the winter.
+Longer term the generator runs on **water gas** made on site. The gas comes from
+a hybrid reactor that works in two phases: it first carbonises wood into a
+charcoal bed, then gasifies that same bed with steam. One vessel, two operating
+phases — nothing is discharged or stored in between. Charcoal is the seasonal
+energy store: PV covers the day, LiFePO4 carries the night, charcoal carries
+the winter.
 
 ## Files
 
@@ -61,17 +63,24 @@ way of comparing the panel against the controller's own log.
 
 ## Naming convention
 
-States carry a layer prefix: **`AGR_`** for the generator, **`GAZ_`** for the
-gasifier, **`RET_`** for the retort. Without it `AGR_RUNNING` and `GAZ_RUNNING`
-would collide once the machines stand side by side — a running engine and a
-reactor producing gas are not the same state.
+States carry a prefix: **`AGR_`** for the generator, **`RET_`** for the reactor's
+carbonisation phase, **`GAZ_`** for its gasification phase. Without it
+`AGR_RUNNING` and `GAZ_RUNNING` would collide — a running engine and a reactor
+producing gas are not the same state.
 
-The three layers stay **separate machines joined by single signals**, not one
-transition table. `GAZ_` raises `gas_ready`, which widens the `AGR_READY` exit
-condition from `gen_request` to `gen_request and gas_ready`; `AGR_` raises
-`engine_drawing`, which the gasifier needs because gas does not flow without the
-engine drawing it. One combined table would multiply out to 6 × 10 × 9 states and
-be unreadable at the first bug.
+`RET_` and `GAZ_` are **two phases of one vessel**, not two machines. The
+carbonisation cycle ends at `RET_COOLDOWN` and what it leaves behind is the
+charcoal bed the gasification phase burns, in place. The first consequence is an
+interlock: the vessel cannot carbonise and gasify at once, so the two phase
+groups are mutually exclusive and `RET_COLD` is the only place the phase may
+change. What decides which group may run is `bed`: empty, wood, or char.
+
+The genset is a genuinely separate machine, joined by **single signals**, not by
+one transition table. `GAZ_` raises `gas_ready`, which widens the `AGR_READY`
+exit condition from `gen_request` to `gen_request and gas_ready`; `AGR_` raises
+`engine_drawing`, which the reactor needs because gas does not flow without the
+engine drawing it. One combined table would multiply out and be unreadable at
+the first bug.
 
 ## Hardware rules that are not negotiable
 

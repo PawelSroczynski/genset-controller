@@ -234,10 +234,20 @@ states:
 mode: skeleton
 name: Hybrid — pyrolysis retort and water-gas gasifier
 
+#  ONE REACTOR, TWO OPERATING PHASES. RET_ and GAZ_ are not two machines. They
+#  are two phases of the SAME vessel: it first carbonises wood into a charcoal
+#  bed, then gasifies that bed with steam. Nothing is discharged in between and
+#  nothing is seasoned — the fuel for the gas phase is the bed left behind by
+#  the pyrolysis phase, in place.
+#
+#  THE FIRST CONSEQUENCE IS AN INTERLOCK: the vessel cannot be carbonising and
+#  gasifying at the same time. The two phase groups are MUTUALLY EXCLUSIVE and
+#  that is now the most important thing this model has to express.
+
 layers:
-  AGR_: genset FOGO FH9000R — finished, in state-machine.yaml
-  GAZ_: gasifier ThriveOffgrid CXF CrossFire — water gas from charcoal
-  RET_: pyrolysis retort — charcoal from wood, batch process
+  AGR_: genset FOGO FH9000R — separate machine, finished, in state-machine.yaml
+  RET_: reactor, carbonisation phase — wood to a charcoal bed, batch
+  GAZ_: reactor, gasification phase — water gas from that same bed
 
 # =====================================================================
 #  THE JOINT BETWEEN LAYERS — this is the whole integration
@@ -292,16 +302,14 @@ parameters:
   # --- retort ---
   t_devol_min:        TBD   # degC — threshold above which the pyrolysis gas
                             # burns by itself and external firing can stop
-  t_discharge_max:    TBD   # degC — below this the retort may be opened. It must
-                            # follow from safety, not from impatience: hot char
-                            # ignites the moment it meets air.
+  t_bed_safe:         TBD   # degC — below this the carbonisation cycle may be
+                            # declared over: the phase may hand over, or the bed
+                            # may be opened and taken out. It must follow from
+                            # safety, not from impatience: hot char ignites the
+                            # moment it meets air.
   t_cooldown_min:     TBD   # s — minimum time sealed, REGARDLESS of what the
                             # thermocouple reads. The probe measures one point;
                             # a 200 kg charge has a gradient.
-  d_seasoning:        8     # days — exposure to air in a thin layer. After 8 days
-                            # char is no longer treated as self-igniting.
-                            # This is a CALENDAR state — the only one in the
-                            # whole installation.
 
   # --- buffer, shared ---
   t_buffer_set:       70    # degC — working setpoint
@@ -322,12 +330,12 @@ coupling:
   # entry must exist and every state must appear exactly once.
   lanes:
     - layer: RET_
-      label: Pyrolysis retort — charcoal from wood, batch
+      label: Reactor, carbonisation phase — wood to a charcoal bed
       source: states_retort
       order: [RET_COLD, RET_CHARGING, RET_LIGHTING, RET_DEVOLATILISING, RET_FINISHING,
-              RET_COOLDOWN, RET_DISCHARGING, RET_SEASONING, RET_FAULT]
+              RET_COOLDOWN, RET_FAULT]
     - layer: GAZ_
-      label: Gasifier CXF — water gas from charcoal
+      label: Reactor, gasification phase — water gas from that bed
       source: states_gas
       order: [GAZ_COLD, GAZ_LIGHTING, GAZ_WARMUP, GAZ_FLARE, GAZ_READY,
               GAZ_PURGE, GAZ_SUPPLYING, GAZ_SHUTDOWN, GAZ_COOLDOWN, GAZ_FAULT]
@@ -351,16 +359,22 @@ coupling:
         Without the engine drawing, gas does not flow: the reactor idles and the
         bed cools down. It also gates the purge, after which the engine valve
         may open.
-    - from: RET_SEASONING
+    - from: RET_COOLDOWN
       to: GAZ_COLD
-      signal: store_kg
-      kind: inventory
-      delay: 8 days
+      signal: bed = char
+      kind: phase
       description: >-
-        NOT a real-time signal. The retort makes charcoal, it seasons in the
-        open for 8 days, then enters the store; the gasifier draws from the
-        store and its precondition is `store_kg > 0`. The timescale is days,
-        not seconds, so there is no transition between these two machines.
+        PHASE HANDOVER INSIDE ONE VESSEL, not a transfer between two machines.
+        The carbonisation cycle ends at RET_COOLDOWN and what it leaves behind
+        is the charcoal bed the gasification phase burns. Nothing is discharged
+        and nothing is seasoned in between.
+        The vessel cannot run both phases at once, so entering any GAZ_ phase
+        requires the RET_ group to be at rest, and the reverse holds too.
+  exclusion: >-
+    RET_ and GAZ_ are phase groups of ONE vessel and are mutually exclusive.
+    At any moment the reactor sits in exactly one phase of one group. Lighting
+    a carbonisation batch while the bed is being gasified, or the reverse, is
+    not a race to be resolved in software — it has to be impossible.
   shared:
     signals: [co_alarm, t_pile, t_buffer_top]
     description: >-
@@ -370,10 +384,14 @@ coupling:
       heat recovery before the EPDM membrane has to work at 80 degC.
 
 counters:
-  store_kg:    0   # charcoal fit for use, seasoning complete
-  season_kg:   0   # charcoal still seasoning, not yet permitted as fuel
-  batch_no:    0   # retort batch number
+  batch_no:     0   # carbonisation batch number
   gas_attempts: 0
+  # `bed` is not a count but the state of the vessel's contents, and it is what
+  # decides which phase group may run next:
+  #   empty  -> only RET_ (charge wood)
+  #   wood   -> only RET_ (carbonise it)
+  #   char   -> only GAZ_ (gasify it), or a manual discharge for sequestration
+  bed: empty
 
 # =====================================================================
 #  INPUTS — THESE SIGNALS DO NOT EXIST YET. This is a list to collect.
@@ -443,9 +461,11 @@ inputs:
     type: analogue
     label: Temperature inside the charcoal pile
     description: >-
-      The only early warning of char self-ignition. It belongs to no machine —
-      a pile heats itself with nobody's involvement. A rising trend means rake
-      the pile out. This is not extinguished with water.
+      The only early warning of char self-ignition, and it now watches something
+      OUTSIDE this cycle. Char that stays in the vessel and is gasified never
+      forms a pile; this applies to char taken out by hand for sequestration,
+      which no state here covers. A pile heats itself with nobody's involvement,
+      a rising trend means rake it out, and it is not extinguished with water.
   t_buffer_top:
     type: analogue
     label: Buffer top-zone temperature
@@ -509,8 +529,11 @@ states_gas:
     signals: { gas_ready: false }
     transitions:
       - to: GAZ_LIGHTING
-        when: gas_demand and store_kg > 0 and not co_alarm
-        description: Run requested, charcoal in the store
+        when: gas_demand and bed == char and not co_alarm
+        description: >-
+          Run requested and the vessel holds a charcoal bed left by a completed
+          carbonisation cycle. There is no store to draw from — the fuel is
+          already inside.
 
   GAZ_LIGHTING:
     x: 300
@@ -700,11 +723,17 @@ states_retort:
   RET_COLD:
     x: 70
     y: 40
-    description: Retort cold, empty or holding a finished charge. Hatches may be opened.
+    description: >-
+      THE VESSEL AT REST — the state both phase groups return to and the only
+      place the phase may change. What happens next is decided by `bed`:
+      empty means charge wood, char means the gasification phase may light it,
+      or the char may be taken out by hand for sequestration, which is outside
+      this controller. Hatches may be opened here.
     outputs: { ignition_burner: false, afterburner_valve: false, buffer_pump: false }
     transitions:
       - to: RET_CHARGING
-        when: charge_demand
+        when: charge_demand and bed == empty
+        description: Only an empty vessel may be charged with wood
 
   RET_CHARGING:
     x: 300
@@ -773,55 +802,25 @@ states_retort:
     x: 990
     y: 170
     description: >-
-      THE CHARGE COOLS SEALED INSIDE THE RETORT. Opening a hot retort feeds
-      oxygen to char with an enormous developed surface — it ignites at once.
+      THE BED COOLS SEALED INSIDE THE VESSEL. Opening it hot feeds oxygen to
+      char with an enormous developed surface — it ignites at once.
       The exit requires BOTH conditions: temperature AND time. Time is there
       because the thermocouple reads one point, while a 200 kg charge has a
       gradient and its core stays hot longer than the probe shows.
+      THIS STATE ENDS THE CARBONISATION CYCLE. What it leaves is the charcoal
+      bed the gasification phase runs on — in place, not discharged.
     outputs: { ignition_burner: false, afterburner_valve: false, buffer_pump: true }
     transitions:
       - to: RET_FAULT
         when: not hatches_closed
         description: Attempt to open before time
-      - to: RET_DISCHARGING
-        when: t_retort < t_discharge_max
-        after: t_cooldown_min
-        description: Temperature AND time — both, not either
-
-  RET_DISCHARGING:
-    x: 760
-    y: 170
-    description: >-
-      Removing the char. It goes out in a THIN LAYER to seasoning, not into
-      bags and not onto the pile. The point is to carry the chemisorption heat
-      away, not to exclude oxygen — hence airy, not sealed.
-    outputs: { ignition_burner: false, afterburner_valve: false, buffer_pump: false }
-    transitions:
-      - to: RET_SEASONING
-        when: discharge_complete
-        actions: { season_kg: "+batch" }
-
-  RET_SEASONING:
-    x: 530
-    y: 170
-    description: >-
-      A CALENDAR STATE, THE ONLY ONE IN THE WHOLE INSTALLATION. It counts in
-      days, not seconds, and it must survive controller restarts — which means
-      its timestamp MUST live in non-volatile memory. Globals with
-      `restore_value: false`, as in the genset machine, will not do.
-      Fresh char self-ignites through oxygen chemisorption. After 8 days of
-      exposure it is no longer treated as dangerous.
-      The retort may be working on the next batch meanwhile — this layer is
-      REENTRANT at this point and the skeleton does not yet handle that.
-    outputs: { ignition_burner: false, afterburner_valve: false, buffer_pump: false }
-    transitions:
-      - to: RET_FAULT
-        when: t_pile_rising
-        description: Self-heating — rake the layer out. This is not extinguished with water.
       - to: RET_COLD
-        after: d_seasoning
-        actions: { store_kg: "+season_kg", season_kg: 0 }
-        description: 8 days elapsed — the charcoal may be burned in the gasifier
+        when: t_retort < t_bed_safe
+        after: t_cooldown_min
+        actions: { bed: char }
+        description: >-
+          Temperature AND time — both, not either. Cycle over, the vessel now
+          holds a charcoal bed and the gasification phase may take over.
 
   RET_FAULT:
     x: 300
@@ -837,21 +836,30 @@ states_retort:
     outputs: { ignition_burner: false, afterburner_valve: true, buffer_pump: true, dump_radiator: true }
     transitions:
       - to: RET_COLD
-        when: reset and not co_alarm and t_retort < t_discharge_max
+        when: reset and not co_alarm and t_retort < t_bed_safe
 
 # =====================================================================
 #  WHAT THIS SKELETON DOES NOT YET HANDLE — stated openly
 # =====================================================================
 gaps:
   - >-
-    REENTRANCY OF RET_SEASONING. Seasoning runs for 8 days while the retort can
-    be working the next batch. One state machine cannot be in two states at
-    once. Seasoning should leave the machine and become a COUNTER WITH A DATE
-    (batch plus discharge date), not a state. This is the most serious flaw in
-    this skeleton and it is known.
+    COOLING DOWN ONLY TO LIGHT IT AGAIN. The carbonisation cycle ends by cooling
+    the bed, and the gasification phase then heats the same bed back up. That
+    throws away the sensible heat of a 200 kg charge. It may well be the right
+    call for safety and for a clean phase boundary, but it is a deliberate cost
+    and nobody has priced it yet. The alternative — handing over hot, with no
+    cooldown — removes the clean boundary and needs its own interlock.
+    QUESTION FOR THE BUILD, not for the model.
   - >-
     NON-VOLATILE MEMORY. The genset needs no memory across restarts — here
-    `season_kg`, `store_kg` and the batch dates must survive a power cut.
+    `bed` and `batch_no` must survive a power cut. Losing `bed` is the dangerous
+    one: a controller that forgets whether the vessel holds wood or char can
+    light the wrong phase.
+  - >-
+    WHERE THE HOPPER FITS. The CXF has a 5 kg charcoal hopper, which suits a
+    gasifier fed from a store. In a vessel gasifying its own bed it is not
+    obvious whether the hopper still feeds anything, or whether `hopper_low`
+    is a signal this machine has at all. To confirm against the hardware.
   - >-
     THE END-OF-DEVOLATILISATION CRITERION. The condition in RET_DEVOLATILISING
     is a placeholder, to be established by measurement on the first runs.
@@ -926,6 +934,7 @@ const I18N = {
       'layer.agr.title':  'Genset \u2014 live machine, simulated',
       'layer.gaz.title':  'Interworking: genset, gasifier and retort on one diagram',
       'shared.label':     'shared, above the layers',
+      'word.phase':       'same vessel, phase handover',
       'word.inventory':   'inventory, not a signal',
       'word.missing':     'to be established',
       'err.yaml':         'YAML error:',
@@ -977,6 +986,7 @@ const I18N = {
       'layer.agr.title':  'Agregat \u2014 maszyna żywa, symulowana',
       'layer.gaz.title':  'Współdziałanie: agregat, gazogenerator i retorta na jednym schemacie',
       'shared.label':     'wspólne, ponad warstwami',
+      'word.phase':       'to samo urządzenie, zmiana fazy',
       'word.inventory':   'zapas, nie sygnał',
       'word.missing':     'do ustalenia',
       'err.yaml':         'Błąd YAML:',
@@ -1886,6 +1896,8 @@ function rysujWspoldzialanie(){
       '<path d="M0,0 L7,2.7 L0,5.4 z" fill="#7BAFD4"/></marker>'+
     '<marker id="wsI" markerWidth="8" markerHeight="8" refX="7" refY="2.7" orient="auto">'+
       '<path d="M0,0 L7,2.7 L0,5.4 z" fill="#e0a14b"/></marker>'+
+    '<marker id="wsF" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto">'+
+      '<path d="M0,0 L7.5,3 L0,6 z" fill="#4fb477"/></marker>'+
     '<marker id="wsS" markerWidth="7" markerHeight="7" refX="6" refY="2.3" orient="auto">'+
       '<path d="M0,0 L6,2.3 L0,4.6 z" fill="#4a5e74"/></marker></defs>';
 
@@ -1924,21 +1936,28 @@ function rysujWspoldzialanie(){
 
   // Sprzęgła prowadzone kanałami MIĘDZY pasami. Kanały rozsunięte, żeby
   // gas_ready i engine_drawing nie nałożyły się etykietami w tym samym korytarzu.
-  const KAN={ store_kg:ETYK+LGAP-Math.round(33*f), gas_ready:ETYK+2*LGAP-Math.round(35*f),
-              engine_drawing:ETYK+2*LGAP-Math.round(17*f) };
+  // Kanał wybiera się z PARY PASÓW, które sprzęgło łączy, nie z nazwy sygnału —
+  // nazwy się zmieniają, geometria nie. Dwa sprzęgła w tym samym korytarzu
+  // (GAZ_→AGR_ i AGR_→GAZ_) rozsuwa kierunek.
+  const STYL={
+    phase:     {kolor:'#4fb477', marker:'wsF', kreska:'', grubosc:2.1, etyk:'word.phase'},
+    inventory: {kolor:'#e0a14b', marker:'wsI', kreska:'stroke-dasharray="6 4" ', grubosc:1.5, etyk:'word.inventory'},
+    signal:    {kolor:'#7BAFD4', marker:'wsA', kreska:'', grubosc:1.5, etyk:null}
+  };
   sprzegla().forEach(l=>{
     const a=poz[l.from], b=poz[l.to]; if(!a||!b) return;
-    const inw=(l.kind==='inventory'), kolor=inw?'#e0a14b':'#7BAFD4';
-    const kan=KAN[l.signal]!==undefined?KAN[l.signal]:(dolOstatniego+8);
+    const st=STYL[l.kind]||STYL.signal, kolor=st.kolor;
     const wDol=(b.pas>a.pas);
+    const szczelina=Math.min(a.pas,b.pas);
+    const kan=ETYK+(szczelina+1)*LGAP-Math.round((wDol?34:16)*f);
     const ax=a.x+CW/2, bx=b.x+CW/2;
     const ay=wDol?(a.y+CH):a.y, by=wDol?b.y:(b.y+CH);
     g+='<path d="M '+ax+' '+ay+' L '+ax+' '+kan+' L '+bx+' '+kan+' L '+bx+' '+(by+(wDol?-4:4))+'" '+
-       'fill="none" stroke="'+kolor+'" stroke-width="1.5" '+
-       (inw?'stroke-dasharray="6 4" ':'')+'marker-end="url(#'+(inw?'wsI':'wsA')+')">'+
+       'fill="none" stroke="'+kolor+'" stroke-width="'+st.grubosc+'" '+
+       st.kreska+'marker-end="url(#'+st.marker+')">'+
        '<title>'+esc(l.from+' → '+l.to+'\n'+l.signal+(l.delay?'  ('+l.delay+')':'')+
        '\n\n'+(l.description||''))+'</title></path>';
-    const et=l.signal+(l.delay?' · '+l.delay:'')+(inw?'  ['+T('word.inventory')+']':'');
+    const et=l.signal+(l.delay?' · '+l.delay:'')+(st.etyk?'  ['+T(st.etyk)+']':'');
     const szer=et.length*5.8+14, ex=Math.max(szer/2, Math.min(maxPrawa-szer/2, (ax+bx)/2));
     g+='<rect x="'+(ex-szer/2)+'" y="'+(kan-8.5)+'" width="'+szer+'" height="17" rx="5" '+
        'fill="#141b24" stroke="'+kolor+'" stroke-width="1"/>'+
@@ -1956,6 +1975,10 @@ function rysujWspoldzialanie(){
        'font-family="ui-monospace,monospace" font-size="9.5" font-weight="700" fill="#9fb4c7">'+
        esc(w.signals.join('   ·   '))+'</text>'+
        '<title>'+esc(w.description||'')+'</title>';
+    const wy=((SZK||{}).coupling||{}).exclusion;
+    if(wy){
+      g+='<title>'+esc(wy)+'</title>';
+    }
   }
 
   const vbW=maxPrawa+20+2*MAR, vbH=yWsp+22+MAR+MAR;
