@@ -55,6 +55,10 @@ deye:
                            # normally-open Gen Signal relay closes.
   gen_stop_soc: 80         # TO BE READ OFF THE DEVICE — the manual states the
                            # start threshold plainly but not the stop one.
+  # Surplus thresholds that separate PV from PV_CHARGING. Two values, not one,
+  # because a single threshold makes the status flap when PV sits on it.
+  p_surplus_on: 120        # W — above this the surplus is called charging
+  p_surplus_off: 80        # W — below this it is not
   gen_charge_a: 40         # manual default. At 51.2 V that is about 2.05 kW,
                            # which is LESS than the 3.5 kW the genset makes.
                            # Left at the default deliberately: the question of
@@ -132,8 +136,16 @@ measurements:
 states_deye:
   DEYE_PV:
     description: >-
-      PV covers the loads and the surplus charges the bank. The genset contact
-      is open. This is where the installation should spend the summer.
+      PV covers the loads, but with no surplus worth speaking of: the bank is
+      floating rather than charging. The genset contact is open.
+    contact: false
+  DEYE_PV_CHARGING:
+    description: >-
+      PV covers the loads AND charges the bank with the surplus. This is where
+      the installation should spend the summer, and it is worth telling apart
+      from bare PV: covering the load is not the same as filling the bank.
+      Entering needs more than p_surplus_on, leaving less than p_surplus_off —
+      a deadband, or the status would flap either side of the threshold.
     contact: false
   DEYE_DISCHARGING:
     description: >-

@@ -252,7 +252,7 @@ states:
       - to: GENS_CRANKING
         when: gen_request and not co_alarm and not running
         after: t_ready
-        description: Request held {t_request_hold} s and ready dwell {t_ready} s elapsed — crank
+        description: Request {t_request_hold} s, dwell {t_ready} s — crank
   GENS_CRANKING:
     x: 300
     y: 40
@@ -261,13 +261,13 @@ states:
     transitions:
       - to: GENS_FAULT
         when: co_alarm
-        description: CO alarm during cranking
+        description: CO alarm
       - to: GENS_STOPPING
         when: kill_btn
-        description: Kill button pressed — short held {t_kill} s regardless of the press
+        description: Kill button
       - to: GENS_STOPPING
         when: not gen_request
-        description: Deye signal lost while cranking
+        description: Deye signal lost
       - to: GENS_RUNNING
         when: running
         description: Run confirmed
@@ -275,11 +275,11 @@ states:
         after: t_attempt
         when: attempts >= attempts_max - 1
         actions: { attempts: "+1" }
-        description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_attempt} s — attempt limit exhausted"
+        description: "Attempt {attempts}/{attempts_max} failed — limit reached"
       - to: GENS_PAUSE
         after: t_attempt
         actions: { attempts: "+1" }
-        description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_attempt} s — {t_pause} s pause"
+        description: "Attempt {attempts}/{attempts_max} failed — pause {t_pause} s"
   GENS_PAUSE:
     x: 300
     y: 170
@@ -288,19 +288,19 @@ states:
     transitions:
       - to: GENS_FAULT
         when: co_alarm
-        description: CO alarm between attempts
+        description: CO alarm
       - to: GENS_STOPPING
         when: kill_btn
-        description: Kill button pressed — short held {t_kill} s regardless of the press
+        description: Kill button
       - to: GENS_RUNNING
         when: running
-        description: Run confirmed with the starter OFF
+        description: Run confirmed
       - to: GENS_READY
         when: not gen_request
-        description: Deye signal lost between attempts — cycle aborted
+        description: Deye signal lost — cycle aborted
       - to: GENS_CRANKING
         after: t_pause
-        description: "{t_pause} s pause elapsed — next attempt"
+        description: "Pause {t_pause} s elapsed — next attempt"
   GENS_RUNNING:
     x: 530
     y: 40
@@ -309,13 +309,13 @@ states:
     transitions:
       - to: GENS_FAULT
         when: co_alarm
-        description: CO alarm with the engine running
+        description: CO alarm
       - to: GENS_STOPPING
         when: kill_btn
-        description: Kill button pressed — short held {t_kill} s regardless of the press
+        description: Kill button
       - to: GENS_FAULT
         when: not running
-        description: Run confirmation lost without a stop command — cause outside the controller
+        description: Run confirmation lost without command
       - to: GENS_STOPPING
         when: not gen_request
         description: Deye signal lost
@@ -325,17 +325,16 @@ states:
     description: Ignition relay OFF — the NC contact shorts the ignition to ground.
     outputs: { ignition: false, starter: false, kill: true }
     transitions:
+      # OBA warunki. Zwolnienie w chwili, gdy silnik przestaje się kręcić,
+      # czyniłoby gaszenie tak krótkim jak naciśnięcie, które o nie poprosiło —
+      # a po to ten przekaźnik istnieje, żeby tego uniknąć.
       - to: GENS_READY
         when: not running
         after: t_kill
-        description: >-
-          Run confirmation lost AND the short held {t_kill} s. Both conditions:
-          releasing the moment the engine stops turning would make the kill as
-          short as the press that asked for it, which is the problem this relay
-          exists to remove.
+        description: Stopped, short held {t_kill} s
       - to: GENS_FAULT
         after: t_rundown
-        description: "Run confirmation held {t_rundown} s after the ignition was shorted — kill circuit defective"
+        description: "Run confirmation held {t_rundown} s — kill circuit fault"
   GENS_FAULT:
     x: 70
     y: 170

@@ -11,9 +11,10 @@ Run this after touching either YAML. It is idempotent and reports what changed.
 """
 import io, re, sys, hashlib
 
+# hybrid-skeleton.yaml NIE jest już osadzany: widok współdziałania został zdjęty.
+# Plik zostaje jako dokument projektowy i link w stopce.
 PARY = [('defaultYaml', 'state-machine.yaml'),
-        ('plantYaml', 'plant.yaml'),
-        ('skeletonYaml', 'hybrid-skeleton.yaml')]
+        ('plantYaml', 'plant.yaml')]
 
 def main():
     s = io.open('index.html', encoding='utf-8').read()

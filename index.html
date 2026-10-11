@@ -261,7 +261,7 @@ states:
       - to: GENS_CRANKING
         when: gen_request and not co_alarm and not running
         after: t_ready
-        description: Request held {t_request_hold} s and ready dwell {t_ready} s elapsed — crank
+        description: Request {t_request_hold} s, dwell {t_ready} s — crank
   GENS_CRANKING:
     x: 300
     y: 40
@@ -270,13 +270,13 @@ states:
     transitions:
       - to: GENS_FAULT
         when: co_alarm
-        description: CO alarm during cranking
+        description: CO alarm
       - to: GENS_STOPPING
         when: kill_btn
-        description: Kill button pressed — short held {t_kill} s regardless of the press
+        description: Kill button
       - to: GENS_STOPPING
         when: not gen_request
-        description: Deye signal lost while cranking
+        description: Deye signal lost
       - to: GENS_RUNNING
         when: running
         description: Run confirmed
@@ -284,11 +284,11 @@ states:
         after: t_attempt
         when: attempts >= attempts_max - 1
         actions: { attempts: "+1" }
-        description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_attempt} s — attempt limit exhausted"
+        description: "Attempt {attempts}/{attempts_max} failed — limit reached"
       - to: GENS_PAUSE
         after: t_attempt
         actions: { attempts: "+1" }
-        description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_attempt} s — {t_pause} s pause"
+        description: "Attempt {attempts}/{attempts_max} failed — pause {t_pause} s"
   GENS_PAUSE:
     x: 300
     y: 170
@@ -297,19 +297,19 @@ states:
     transitions:
       - to: GENS_FAULT
         when: co_alarm
-        description: CO alarm between attempts
+        description: CO alarm
       - to: GENS_STOPPING
         when: kill_btn
-        description: Kill button pressed — short held {t_kill} s regardless of the press
+        description: Kill button
       - to: GENS_RUNNING
         when: running
-        description: Run confirmed with the starter OFF
+        description: Run confirmed
       - to: GENS_READY
         when: not gen_request
-        description: Deye signal lost between attempts — cycle aborted
+        description: Deye signal lost — cycle aborted
       - to: GENS_CRANKING
         after: t_pause
-        description: "{t_pause} s pause elapsed — next attempt"
+        description: "Pause {t_pause} s elapsed — next attempt"
   GENS_RUNNING:
     x: 530
     y: 40
@@ -318,13 +318,13 @@ states:
     transitions:
       - to: GENS_FAULT
         when: co_alarm
-        description: CO alarm with the engine running
+        description: CO alarm
       - to: GENS_STOPPING
         when: kill_btn
-        description: Kill button pressed — short held {t_kill} s regardless of the press
+        description: Kill button
       - to: GENS_FAULT
         when: not running
-        description: Run confirmation lost without a stop command — cause outside the controller
+        description: Run confirmation lost without command
       - to: GENS_STOPPING
         when: not gen_request
         description: Deye signal lost
@@ -334,17 +334,16 @@ states:
     description: Ignition relay OFF — the NC contact shorts the ignition to ground.
     outputs: { ignition: false, starter: false, kill: true }
     transitions:
+      # OBA warunki. Zwolnienie w chwili, gdy silnik przestaje się kręcić,
+      # czyniłoby gaszenie tak krótkim jak naciśnięcie, które o nie poprosiło —
+      # a po to ten przekaźnik istnieje, żeby tego uniknąć.
       - to: GENS_READY
         when: not running
         after: t_kill
-        description: >-
-          Run confirmation lost AND the short held {t_kill} s. Both conditions:
-          releasing the moment the engine stops turning would make the kill as
-          short as the press that asked for it, which is the problem this relay
-          exists to remove.
+        description: Stopped, short held {t_kill} s
       - to: GENS_FAULT
         after: t_rundown
-        description: "Run confirmation held {t_rundown} s after the ignition was shorted — kill circuit defective"
+        description: "Run confirmation held {t_rundown} s — kill circuit fault"
   GENS_FAULT:
     x: 70
     y: 170
@@ -416,6 +415,10 @@ deye:
                            # normally-open Gen Signal relay closes.
   gen_stop_soc: 80         # TO BE READ OFF THE DEVICE — the manual states the
                            # start threshold plainly but not the stop one.
+  # Surplus thresholds that separate PV from PV_CHARGING. Two values, not one,
+  # because a single threshold makes the status flap when PV sits on it.
+  p_surplus_on: 120        # W — above this the surplus is called charging
+  p_surplus_off: 80        # W — below this it is not
   gen_charge_a: 40         # manual default. At 51.2 V that is about 2.05 kW,
                            # which is LESS than the 3.5 kW the genset makes.
                            # Left at the default deliberately: the question of
@@ -493,8 +496,16 @@ measurements:
 states_deye:
   DEYE_PV:
     description: >-
-      PV covers the loads and the surplus charges the bank. The genset contact
-      is open. This is where the installation should spend the summer.
+      PV covers the loads, but with no surplus worth speaking of: the bank is
+      floating rather than charging. The genset contact is open.
+    contact: false
+  DEYE_PV_CHARGING:
+    description: >-
+      PV covers the loads AND charges the bank with the surplus. This is where
+      the installation should spend the summer, and it is worth telling apart
+      from bare PV: covering the load is not the same as filling the bank.
+      Entering needs more than p_surplus_on, leaving less than p_surplus_off —
+      a deadband, or the status would flap either side of the threshold.
     contact: false
   DEYE_DISCHARGING:
     description: >-
@@ -515,667 +526,6 @@ states_deye:
       stop threshold, because releasing it at the start threshold would stop the
       genset the instant it began to help.
     contact: true
-</script>
-<script id="skeletonYaml" type="text/yaml">
-# =====================================================================
-#  STATE SKELETON — PYROLYSIS RETORT + CHARCOAL GASIFIER (WATER GAS)
-#
-#  mode: SKELETON. The outputs have NO pins assigned, nothing here drives
-#  hardware, and none of it may be flashed to a controller. The file records
-#  the split into layers, the sequences and the interlocks — for review and
-#  correction on paper, before the machines have signals.
-#
-#  TWO MACHINES, NOT ONE TABLE. The genset (GENS_, in state-machine.yaml) is
-#  untouched. Two parallel layers are added here, and the joint between them
-#  is a SINGLE SIGNAL each way, not shared transitions. Folding everything
-#  into one table would multiply out to 6 x 10 x 9 combinations and the table
-#  would be unreadable at the first bug.
-# =====================================================================
-
-mode: skeleton
-name: Hybrid — pyrolysis retort and water-gas gasifier
-
-#  ONE REACTOR, TWO OPERATING PHASES. RET_ and GAZ_ are not two machines. They
-#  are two phases of the SAME vessel: it first carbonises wood into a charcoal
-#  bed, then gasifies that bed with steam. Nothing is discharged in between and
-#  nothing is seasoned — the fuel for the gas phase is the bed left behind by
-#  the pyrolysis phase, in place.
-#
-#  THE FIRST CONSEQUENCE IS AN INTERLOCK: the vessel cannot be carbonising and
-#  gasifying at the same time. The two phase groups are MUTUALLY EXCLUSIVE and
-#  that is now the most important thing this model has to express.
-
-layers:
-  GENS_: genset FOGO FH9000R — separate machine, finished, in state-machine.yaml
-  RET_: reactor, carbonisation phase — wood to a charcoal bed, batch
-  GAZ_: reactor, gasification phase — water gas from that same bed
-
-# =====================================================================
-#  THE JOINT BETWEEN LAYERS — this is the whole integration
-# =====================================================================
-#
-#  GAZ_ -> GENS_   one signal: `gas_ready`
-#                 The GENS_READY exit condition widens from `gen_request`
-#                 to `gen_request and gas_ready`.
-#                 THAT IS THE ONLY CHANGE TO THE GENSET MACHINE. Nothing else.
-#
-#  GENS_ -> GAZ_   one signal: `engine_drawing`  (GENS_ is in GENS_RUNNING)
-#                 The gasifier needs it: without the engine drawing, gas does
-#                 not flow, the reactor idles and the bed cools down.
-#
-#  RET_ -> GAZ_   NO REAL-TIME SIGNAL AT ALL.
-#                 The retort and the gasifier are coupled by INVENTORY, not by
-#                 a signal: the retort makes charcoal, the charcoal seasons in
-#                 the open for 8 days, then goes to the store, and the gasifier
-#                 draws from the store. The timescale is days, not seconds.
-#                 Wiring them with a state transition would be invented.
-#                 The only thing that crosses: store level as a COUNTER in kg,
-#                 never as a machine state.
-#
-#  SHARED, ABOVE THE LAYERS — these feed all three
-#                 `co_alarm`     carbon monoxide alarm in the plant room
-#                 `t_pile`       temperature inside the charcoal pile
-#                 `t_buffer_top` top-zone temperature of the 4 m3 buffer
-#                 None of these belongs to any layer. They are the background
-#                 all three machines operate in.
-
-# =====================================================================
-#  PARAMETERS — TBD means the number does not exist yet, and where it must
-#  come from
-# =====================================================================
-parameters:
-  # --- gasifier ---
-  t_bed_min:          TBD   # degC — water-gas reaction threshold; below it the
-                            # steam only cools the bed and the product is CO2
-                            # with unreacted water. The literature on charcoal
-                            # beds quotes 700-900 degC.
-                            # SOURCE: a thermocouple in the CXF, not a paper.
-  t_warmup_max:       TBD   # s — warm-up limit; past it, fault rather than wait
-  t_flare_min:        TBD   # s — how long the gas must burn steadily before it
-                            # may be considered fit for the engine
-  t_purge:            TBD   # s — purge of the reactor-to-mixer run before the
-                            # engine valve opens; clears air out of that section
-  kg_per_kwh:         0.82  # kg charcoal/kWh — from the CXF sheet, range 0.78-0.85
-  l_water_per_kg:     1.0   # l water/kg charcoal — vendor figure; it lands
-                            # exactly on the autothermal limit (956 g)
-  hopper_kg:          5     # kg — CXF hopper, about 1.8 h of running
-
-  # --- retort ---
-  t_devol_min:        TBD   # degC — threshold above which the pyrolysis gas
-                            # burns by itself and external firing can stop
-  t_bed_safe:         TBD   # degC — below this the carbonisation cycle may be
-                            # declared over: the phase may hand over, or the bed
-                            # may be opened and taken out. It must follow from
-                            # safety, not from impatience: hot char ignites the
-                            # moment it meets air.
-  t_cooldown_min:     TBD   # s — minimum time sealed, REGARDLESS of what the
-                            # thermocouple reads. The probe measures one point;
-                            # a 200 kg charge has a gradient.
-
-  # --- buffer, shared ---
-  t_buffer_set:       70    # degC — working setpoint
-  t_buffer_cutoff:    78    # degC — cutoff. Above 82 degC the EPDM membrane
-                            # softens. The 4 K margin is not caution, it is
-                            # 4000 l of near-boiling water in a room full of
-                            # electronics.
-
-# =====================================================================
-#  COUPLING — the joint between the three machines, AS DATA.
-#  The interworking diagram in the simulator is rendered from this section,
-#  so a wrong coupling is visible rather than buried in a comment.
-# =====================================================================
-coupling:
-  # Lane order for the interworking diagram. Explicit rather than derived from
-  # key order, because key order in state-machine.yaml follows the diagram
-  # layout, not the process flow. Validated against the state tables: every
-  # entry must exist and every state must appear exactly once.
-  lanes:
-    - layer: RET_
-      label: Reactor, carbonisation phase — wood to a charcoal bed
-      source: states_retort
-      order: [RET_COLD, RET_CHARGING, RET_LIGHTING, RET_DEVOLATILISING, RET_FINISHING,
-              RET_COOLDOWN, RET_FAULT]
-    - layer: GAZ_
-      label: Reactor, gasification phase — water gas from that bed
-      source: states_gas
-      order: [GAZ_COLD, GAZ_LIGHTING, GAZ_WARMUP, GAZ_FLARE, GAZ_READY,
-              GAZ_PURGE, GAZ_SUPPLYING, GAZ_SHUTDOWN, GAZ_COOLDOWN, GAZ_FAULT]
-    - layer: GENS_
-      label: Genset FH9000R — live machine, simulated in the GENS_ view
-      source: state_machine
-      order: [GENS_READY, GENS_CRANKING, GENS_PAUSE, GENS_RUNNING, GENS_STOPPING, GENS_FAULT]
-  links:
-    - from: GAZ_READY
-      to: GENS_READY
-      signal: gas_ready
-      kind: signal
-      description: >-
-        Widens the GENS_READY exit condition from `gen_request` to
-        `gen_request and gas_ready`. THE ONLY CHANGE TO THE GENSET MACHINE.
-    - from: GENS_RUNNING
-      to: GAZ_PURGE
-      signal: engine_drawing
-      kind: signal
-      description: >-
-        Without the engine drawing, gas does not flow: the reactor idles and the
-        bed cools down. It also gates the purge, after which the engine valve
-        may open.
-    - from: RET_COOLDOWN
-      to: GAZ_COLD
-      signal: bed = char
-      kind: phase
-      description: >-
-        PHASE HANDOVER INSIDE ONE VESSEL, not a transfer between two machines.
-        The carbonisation cycle ends at RET_COOLDOWN and what it leaves behind
-        is the charcoal bed the gasification phase burns. Nothing is discharged
-        and nothing is seasoned in between.
-        The vessel cannot run both phases at once, so entering any GAZ_ phase
-        requires the RET_ group to be at rest, and the reverse holds too.
-  exclusion: >-
-    RET_ and GAZ_ are phase groups of ONE vessel and are mutually exclusive.
-    At any moment the reactor sits in exactly one phase of one group. Lighting
-    a carbonisation batch while the bed is being gasified, or the reverse, is
-    not a race to be resolved in software — it has to be impossible.
-  shared:
-    signals: [co_alarm, t_pile, t_buffer_top]
-    description: >-
-      These belong to no layer. They are the background all three machines
-      operate in: a CO alarm faults every one of them, pile temperature warns of
-      char self-ignition with nobody's involvement, and buffer temperature caps
-      heat recovery before the EPDM membrane has to work at 80 degC.
-
-counters:
-  batch_no:     0   # carbonisation batch number
-  gas_attempts: 0
-  # `bed` is not a count but the state of the vessel's contents, and it is what
-  # decides which phase group may run next:
-  #   empty  -> only RET_ (charge wood)
-  #   wood   -> only RET_ (carbonise it)
-  #   char   -> only GAZ_ (gasify it), or a manual discharge for sequestration
-  bed: empty
-
-# =====================================================================
-#  INPUTS — THESE SIGNALS DO NOT EXIST YET. This is a list to collect.
-# =====================================================================
-inputs:
-  # --- gasifier ---
-  t_bed:
-    type: analogue
-    label: Bed temperature
-    description: >-
-      Type-K thermocouple in the reduction zone. The single most important
-      measurement in the GAZ_ layer — it decides when steam may be injected
-      and when the gas is fit for the engine.
-    missing: Whether the CXF already has a thermocouple port, or it must be drilled.
-  hopper_low:
-    type: binary
-    label: Charcoal hopper low
-    description: Level switch in the 5 kg hopper. ON = refill.
-    missing: Whether the CXF has such a switch.
-  water_ok:
-    type: binary
-    label: Cracking water present
-    description: >-
-      Level in the water tank. Running out of water with a hot bed is not
-      a standstill — it is a bed burning in clean air, without the endothermic
-      reaction that was cooling it.
-  flare_flame:
-    type: binary
-    label: Flame at the flare
-    description: >-
-      Flame detector (ionisation or UV) at the flare outlet. The only direct
-      evidence that the gas is combustible rather than nitrogen and CO2.
-  engine_valve_fb:
-    type: output_feedback
-    label: Engine gas valve position feedback
-    description: Limit switch on the valve. Position must be read, not assumed.
-
-  # --- retort ---
-  t_retort:
-    type: analogue
-    label: Charge temperature
-    description: Thermocouple in the core of the charge. One point — see t_cooldown_min.
-  hatches_closed:
-    type: binary
-    label: Retort hatches closed
-    description: >-
-      Limit switches on the charging and discharge hatches, in series.
-      Pyrolysis with a hatch open is combustion of the charge, not carbonisation.
-  afterburner_flame:
-    type: binary
-    label: Flame in the pyrolysis gas afterburner
-    description: >-
-      Pyrolysis gas is tar-laden and MUST NOT be fed to the engine. It goes to
-      the afterburner and its heat to the buffer. Flame loss while devolatilising
-      means tar and CO are venting into the room instead of up the stack.
-
-  # --- shared ---
-  co_alarm:
-    type: binary
-    label: CO alarm
-    description: >-
-      The same detector that already feeds IN-02 of the genset.
-      !! A DELIBERATE GAP: a CO detector does not see hydrogen. Water gas is
-      close to 28 % H2, and hydrogen rises to the ceiling. Ventilation from the
-      highest point of the room is the safeguard here, not the detector.
-  t_pile:
-    type: analogue
-    label: Temperature inside the charcoal pile
-    description: >-
-      The only early warning of char self-ignition, and it now watches something
-      OUTSIDE this cycle. Char that stays in the vessel and is gasified never
-      forms a pile; this applies to char taken out by hand for sequestration,
-      which no state here covers. A pile heats itself with nobody's involvement,
-      a rising trend means rake it out, and it is not extinguished with water.
-  t_buffer_top:
-    type: analogue
-    label: Buffer top-zone temperature
-    description: Cuts heat recovery before the EPDM membrane has to work at 80 degC.
-
-# =====================================================================
-#  OUTPUTS — NO PINS. A list of intent, not a configuration.
-# =====================================================================
-outputs:
-  blower:
-    pin: TBD
-    label: Primary air blower
-    description: Air to the oxidation zone. That is what powers the endothermic reaction.
-  steam_injection:
-    pin: TBD
-    label: Steam injection
-    description: >-
-      HARD INTERLOCK: only while t_bed > t_bed_min and water_ok.
-      Steam onto a cold bed is lost heat and gas with no calorific value.
-  flare_valve:
-    pin: TBD
-    label: Valve to the flare
-    description: The gas path to open air. Default state OPEN — the gas must have a way out.
-  engine_gas_valve:
-    pin: TBD
-    label: Gas valve to the engine
-    description: >-
-      Opening is permitted only from GAZ_READY, after the purge.
-      Default state CLOSED. Loss of power must close it by itself —
-      a spring-return valve, not a bistable one.
-  buffer_pump:
-    pin: TBD
-    label: Heat recovery circulation pump to the buffer
-  dump_radiator:
-    pin: TBD
-    label: Three-way valve to the dump radiator
-    description: >-
-      Above t_buffer_cutoff the heat goes to air. A lit retort batch CANNOT BE
-      STOPPED — 200 kg of charge releases about 1000 kWh and the buffer holds
-      209 kWh. The dump radiator is not a safeguard against a fault, it is part
-      of normal operation.
-  ignition_burner:
-    pin: TBD
-    label: Retort ignition burner
-    description: External heat source until devolatilisation is self-sustaining.
-  afterburner_valve:
-    pin: TBD
-    label: Pyrolysis gas valve to the afterburner
-
-# =====================================================================
-#  LAYER GAZ_ — GASIFIER
-# =====================================================================
-states_gas:
-  GAZ_COLD:
-    x: 70
-    y: 40
-    description: >-
-      Reactor cold, bed may or may not be loaded. Engine valve closed, flare
-      open. The resting state — and the one everything returns to.
-    outputs: { blower: false, steam_injection: false, flare_valve: true, engine_gas_valve: false }
-    signals: { gas_ready: false }
-    transitions:
-      - to: GAZ_LIGHTING
-        when: gas_demand and bed == char and not co_alarm
-        description: >-
-          Run requested and the vessel holds a charcoal bed left by a completed
-          carbonisation cycle. There is no store to draw from — the fuel is
-          already inside.
-
-  GAZ_LIGHTING:
-    x: 300
-    y: 40
-    description: >-
-      Lighting the bed. OPEN QUESTION: does the CXF have electric bed ignition,
-      or is it lit by hand only. If by hand, this is NOT a controller state —
-      it is a human state, and the controller merely waits on t_bed with
-      nothing here to energise.
-    outputs: { blower: true, steam_injection: false, flare_valve: true, engine_gas_valve: false }
-    signals: { gas_ready: false }
-    transitions:
-      - to: GAZ_FAULT
-        when: co_alarm
-      - to: GAZ_WARMUP
-        when: t_bed > 300
-        description: Bed has caught — it climbs on its own from here
-
-  GAZ_WARMUP:
-    x: 530
-    y: 40
-    description: >-
-      The bed climbs to reaction temperature. NO STEAM YET — this phase is
-      purely exothermic, air onto charcoal. The gas is weak, goes to the flare
-      and is not treated as combustible.
-    outputs: { blower: true, steam_injection: false, flare_valve: true, engine_gas_valve: false }
-    signals: { gas_ready: false }
-    transitions:
-      - to: GAZ_FAULT
-        when: co_alarm
-      - to: GAZ_FAULT
-        after: t_warmup_max
-        description: Bed failed to reach temperature within the limit — wet charcoal or a draught
-      - to: GAZ_FLARE
-        when: t_bed > t_bed_min and water_ok
-        description: Reaction temperature reached and water present — steam may be injected
-
-  GAZ_FLARE:
-    x: 760
-    y: 40
-    description: >-
-      Full water-gas reaction, steam injected, but the gas STILL GOES TO THE
-      FLARE. This is the evidential state: the flame at the flare is the only
-      direct proof that the pipe carries combustible gas rather than nitrogen
-      and CO2. Only after t_flare_min of steady flame may the gas be considered
-      fit for the engine. It is also the only place where air leaves the line.
-    outputs: { blower: true, steam_injection: true, flare_valve: true, engine_gas_valve: false }
-    signals: { gas_ready: false }
-    transitions:
-      - to: GAZ_FAULT
-        when: co_alarm
-      - to: GAZ_WARMUP
-        when: t_bed < t_bed_min
-        description: Bed quenched by the injection — steam OFF, reheat
-      - to: GAZ_FAULT
-        when: not water_ok
-        description: No water with a hot bed — the charcoal burns without the cracking reaction
-      - to: GAZ_READY
-        when: flare_flame
-        after: t_flare_min
-        description: Flame steady for {t_flare_min} s — gas accepted
-
-  GAZ_READY:
-    x: 990
-    y: 40
-    description: >-
-      THIS IS THE JOINT. The only state that raises the `gas_ready` signal read
-      by the GENS_ layer. The reactor makes gas to the flare and waits. The
-      genset may start, or may not. The engine valve is still closed — it opens
-      only after the purge, once the genset reports that it is drawing.
-    outputs: { blower: true, steam_injection: true, flare_valve: true, engine_gas_valve: false }
-    signals: { gas_ready: true }
-    transitions:
-      - to: GAZ_FAULT
-        when: co_alarm
-      - to: GAZ_FLARE
-        when: not flare_flame or t_bed < t_bed_min
-        description: Gas quality lost — the ready signal is withdrawn
-      - to: GAZ_PURGE
-        when: engine_drawing
-        description: Genset confirmed running — purge the run to the mixer
-      - to: GAZ_SHUTDOWN
-        when: not gas_demand
-        description: Demand withdrawn without the engine ever starting
-
-  GAZ_PURGE:
-    x: 760
-    y: 170
-    description: >-
-      The reactor-to-mixer run is full of air. Before the engine valve opens,
-      that run must be filled with gas. A separate state, because it is a
-      separate hazard: hydrogen mixed with air in a closed pipe has a wide
-      explosive range.
-    outputs: { blower: true, steam_injection: true, flare_valve: true, engine_gas_valve: false }
-    signals: { gas_ready: true }
-    transitions:
-      - to: GAZ_FAULT
-        when: co_alarm
-      - to: GAZ_SUPPLYING
-        after: t_purge
-        when: engine_drawing
-        description: Line purged — engine valve opens
-      - to: GAZ_READY
-        when: not engine_drawing
-        description: Engine stopped drawing mid-purge
-
-  GAZ_SUPPLYING:
-    x: 990
-    y: 170
-    description: >-
-      Gas flows to the engine. The flare stays OPEN — the gas must keep a way
-      out even if the engine suddenly stops drawing. Closing both paths on a
-      hot reactor is pressure rise in a closed vessel.
-    outputs: { blower: true, steam_injection: true, flare_valve: true, engine_gas_valve: true }
-    signals: { gas_ready: true }
-    transitions:
-      - to: GAZ_FAULT
-        when: co_alarm
-      - to: GAZ_READY
-        when: not engine_drawing
-        description: Engine stopped — engine valve closes, gas returns to the flare
-      - to: GAZ_SHUTDOWN
-        when: not gas_demand
-        description: End of cycle
-
-  GAZ_SHUTDOWN:
-    x: 300
-    y: 170
-    description: >-
-      UNRESOLVED STATE — TWO PROCEDURES WITH OPPOSITE RISKS. This has to be
-      settled with ThriveOffgrid, because it decides what is left in the room
-      overnight.
-        (a) DRAW DOWN with the engine: run until the bed is spent. The reactor
-            ends up cold and empty, but the engine gets the worst-quality gas
-            at the end and air passes through the reactor.
-        (b) SEAL IT: cut the air and let it die. A hot bed remains, with CO in
-            the reactor. Gas-tightness becomes the safeguard.
-      Not choosing on the vendor's behalf. The skeleton leaves the branch open.
-    outputs: { blower: TBD, steam_injection: false, flare_valve: true, engine_gas_valve: false }
-    signals: { gas_ready: false }
-    transitions:
-      - to: GAZ_COOLDOWN
-        when: TBD
-        description: Depends on the chosen procedure
-
-  GAZ_COOLDOWN:
-    x: 70
-    y: 170
-    description: >-
-      Reactor hot, not producing. The room needs ventilation — CO is still
-      being formed in this state and there is no longer a flame burning it off.
-    outputs: { blower: false, steam_injection: false, flare_valve: true, engine_gas_valve: false }
-    signals: { gas_ready: false }
-    transitions:
-      - to: GAZ_COLD
-        when: t_bed < 60
-
-  GAZ_FAULT:
-    x: 530
-    y: 170
-    fault: true
-    description: >-
-      Steam OFF, blower OFF, engine valve CLOSED, flare OPEN. The flare stays
-      open deliberately: in a fault the gas must have a way out to open air,
-      not into the room and not into the engine.
-      Reset only after cooldown — a hot reactor is still a gas source.
-    outputs: { blower: false, steam_injection: false, flare_valve: true, engine_gas_valve: false }
-    signals: { gas_ready: false }
-    transitions:
-      - to: GAZ_COLD
-        when: reset and not co_alarm and t_bed < 60
-
-# =====================================================================
-#  LAYER RET_ — PYROLYSIS RETORT
-#
-#  A CONSTITUTIONAL DIFFERENCE FROM THE OTHER LAYERS:
-#  once lit, a retort CANNOT BE STOPPED. The genset is killed by shorting the
-#  ignition, the gasifier by cutting its air — but 200 kg of charge that has
-#  started devolatilising will run to the end whatever the controller does.
-#  So this layer has no "stopping" state. It has RET_DEVOLATILISING, whose only
-#  exit is the end of the process, and a FAULT state that can do no more than
-#  divert the heat to the dump radiator and call a human.
-#  DESIGN CONSEQUENCE: the decision is made at lighting, not during the run.
-#  The entry conditions must therefore be harder than anywhere else.
-# =====================================================================
-states_retort:
-  RET_COLD:
-    x: 70
-    y: 40
-    description: >-
-      THE VESSEL AT REST — the state both phase groups return to and the only
-      place the phase may change. What happens next is decided by `bed`:
-      empty means charge wood, char means the gasification phase may light it,
-      or the char may be taken out by hand for sequestration, which is outside
-      this controller. Hatches may be opened here.
-    outputs: { ignition_burner: false, afterburner_valve: false, buffer_pump: false }
-    transitions:
-      - to: RET_CHARGING
-        when: charge_demand and bed == empty
-        description: Only an empty vessel may be charged with wood
-
-  RET_CHARGING:
-    x: 300
-    y: 40
-    description: Loading wood. Hatches open. Lighting is interlocked in hardware.
-    outputs: { ignition_burner: false, afterburner_valve: false, buffer_pump: false }
-    transitions:
-      - to: RET_LIGHTING
-        when: hatches_closed and pyrolysis_demand and t_buffer_top < t_buffer_set and not co_alarm
-        actions: { batch_no: "+1" }
-        description: >-
-          Four conditions at once, and that is deliberate. A cold buffer is one
-          of them: a batch releases about 1000 kWh, the buffer holds 209 kWh.
-          Starting with the buffer at 65 degC condemns the whole batch to the
-          dump radiator.
-
-  RET_LIGHTING:
-    x: 530
-    y: 40
-    description: >-
-      The external burner heats the charge to the self-sustaining threshold.
-      The only state in this layer that can still be called off at no cost.
-    outputs: { ignition_burner: true, afterburner_valve: true, buffer_pump: true }
-    transitions:
-      - to: RET_FAULT
-        when: co_alarm or not hatches_closed
-      - to: RET_COLD
-        when: not pyrolysis_demand
-        description: Called off — the last moment at which this still costs nothing
-      - to: RET_DEVOLATILISING
-        when: t_retort > t_devol_min and afterburner_flame
-        description: Pyrolysis gas burns by itself — the burner can be shut down
-
-  RET_DEVOLATILISING:
-    x: 760
-    y: 40
-    description: >-
-      Self-sustaining process. Pyrolysis gas to the afterburner, heat to the
-      buffer. THERE IS NO EXIT FROM THIS STATE ON DEMAND. The batch ends when
-      it ends. Flame loss in the afterburner is an immediate fault: tar and CO
-      then go into the room instead of up the stack.
-    outputs: { ignition_burner: false, afterburner_valve: true, buffer_pump: true }
-    transitions:
-      - to: RET_FAULT
-        when: co_alarm or not afterburner_flame or not hatches_closed
-      - to: RET_FINISHING
-        when: TBD
-        description: Gas evolution ceases — end of devolatilisation
-        missing: >-
-          The end criterion. It does not follow from the thermocouple alone.
-          Retort practice relies on the afterburner flame dying out. To be
-          established on the first runs — this condition is a placeholder.
-
-  RET_FINISHING:
-    x: 990
-    y: 40
-    description: Residual evolution. Heat recovery still worth taking.
-    outputs: { ignition_burner: false, afterburner_valve: true, buffer_pump: true }
-    transitions:
-      - to: RET_FAULT
-        when: co_alarm
-      - to: RET_COOLDOWN
-        when: t_retort < t_devol_min
-
-  RET_COOLDOWN:
-    x: 990
-    y: 170
-    description: >-
-      THE BED COOLS SEALED INSIDE THE VESSEL. Opening it hot feeds oxygen to
-      char with an enormous developed surface — it ignites at once.
-      The exit requires BOTH conditions: temperature AND time. Time is there
-      because the thermocouple reads one point, while a 200 kg charge has a
-      gradient and its core stays hot longer than the probe shows.
-      THIS STATE ENDS THE CARBONISATION CYCLE. What it leaves is the charcoal
-      bed the gasification phase runs on — in place, not discharged.
-    outputs: { ignition_burner: false, afterburner_valve: false, buffer_pump: true }
-    transitions:
-      - to: RET_FAULT
-        when: not hatches_closed
-        description: Attempt to open before time
-      - to: RET_COLD
-        when: t_retort < t_bed_safe
-        after: t_cooldown_min
-        actions: { bed: char }
-        description: >-
-          Temperature AND time — both, not either. Cycle over, the vessel now
-          holds a charcoal bed and the gasification phase may take over.
-
-  RET_FAULT:
-    x: 300
-    y: 170
-    fault: true
-    description: >-
-      Burner OFF, heat to the dump radiator, call a human.
-      AND THAT IS ALL THIS FAULT STATE CAN DO. If it was entered from
-      RET_DEVOLATILISING the process continues regardless — the controller
-      stops steering it but does not stop it. This is not a flaw in the
-      skeleton, it is a property of batch pyrolysis, and it is why the entry
-      conditions into RET_LIGHTING are as hard as they are.
-    outputs: { ignition_burner: false, afterburner_valve: true, buffer_pump: true, dump_radiator: true }
-    transitions:
-      - to: RET_COLD
-        when: reset and not co_alarm and t_retort < t_bed_safe
-
-# =====================================================================
-#  WHAT THIS SKELETON DOES NOT YET HANDLE — stated openly
-# =====================================================================
-gaps:
-  - >-
-    COOLING DOWN ONLY TO LIGHT IT AGAIN. The carbonisation cycle ends by cooling
-    the bed, and the gasification phase then heats the same bed back up. That
-    throws away the sensible heat of a 200 kg charge. It may well be the right
-    call for safety and for a clean phase boundary, but it is a deliberate cost
-    and nobody has priced it yet. The alternative — handing over hot, with no
-    cooldown — removes the clean boundary and needs its own interlock.
-    QUESTION FOR THE BUILD, not for the model.
-  - >-
-    NON-VOLATILE MEMORY. The genset needs no memory across restarts — here
-    `bed` and `batch_no` must survive a power cut. Losing `bed` is the dangerous
-    one: a controller that forgets whether the vessel holds wood or char can
-    light the wrong phase.
-  - >-
-    WHERE THE HOPPER FITS. The CXF has a 5 kg charcoal hopper, which suits a
-    gasifier fed from a store. In a vessel gasifying its own bed it is not
-    obvious whether the hopper still feeds anything, or whether `hopper_low`
-    is a signal this machine has at all. To confirm against the hardware.
-  - >-
-    THE END-OF-DEVOLATILISATION CRITERION. The condition in RET_DEVOLATILISING
-    is a placeholder, to be established by measurement on the first runs.
-  - >-
-    CXF SHUTDOWN PROCEDURE. The branch is left open deliberately — (a) and (b)
-    carry opposite risks and this is a question for ThriveOffgrid.
-  - >-
-    HYDROGEN. A CO detector does not see H2, and water gas is 28 % H2. The
-    safeguard is gravity ventilation from the highest point of the room, not any
-    sensor listed here. That is a BUILDING requirement, not a programming one,
-    which is why it appears in no transition.
-  - >-
-    THERMAL COUPLING OF TWO SOURCES. The retort and the gasifier can both heat
-    the buffer at once and will overfill it together. Settling the buildings'
-    heat demand is a precondition for designing any priority between them.
 </script>
 <script id="i18n">
 // =====================================================================
@@ -1231,12 +581,6 @@ const I18N = {
       'word.when':        'when',
       'word.hold':        'hold',
       'word.datasheet':   'datasheet',
-      'skeleton.badge':   'interworking \u2014 not simulated, English only',
-      'skeleton.pick':    'Click any state in the diagram to read it',
-      'layer.gens.title':  'Genset \u2014 live machine, simulated',
-      'layer.gaz.title':  'Interworking: genset, gasifier and retort on one diagram',
-      'shared.label':     'shared, above the layers',
-      'word.phase':       'same vessel, phase handover',
       'syn.pv':           'PV',
       'syn.request':      'GS contact',
       'sound.on':         'Sound on — a short tone on every state transition. Click to mute.',
@@ -1274,8 +618,6 @@ const I18N = {
       'syn.stopped':      'STOP',
       'syn.fromGen':      'GENSET',
       'syn.fromBank':     'BANK',
-      'word.inventory':   'inventory, not a signal',
-      'word.missing':     'to be established',
       'err.yaml':         'YAML error:',
       'err.load':         'Failed to load definition:',
       'err.noStates':     'Missing "states" section'
@@ -1321,12 +663,6 @@ const I18N = {
       'word.when':        'gdy',
       'word.hold':        'przytrzymanie',
       'word.datasheet':   'karta katalogowa',
-      'skeleton.badge':   'współdziałanie \u2014 bez symulacji, opisy po angielsku',
-      'skeleton.pick':    'Kliknij stan na schemacie, żeby go przeczytać',
-      'layer.gens.title':  'Agregat \u2014 maszyna żywa, symulowana',
-      'layer.gaz.title':  'Współdziałanie: agregat, gazogenerator i retorta na jednym schemacie',
-      'shared.label':     'wspólne, ponad warstwami',
-      'word.phase':       'to samo urządzenie, zmiana fazy',
       'syn.pv':           'PV',
       'syn.request':      'styk GS',
       'sound.on':         'Dźwięk włączony — krótki ton przy każdym przejściu stanu. Kliknij, żeby wyciszyć.',
@@ -1364,8 +700,6 @@ const I18N = {
       'syn.stopped':      'STÓJ',
       'syn.fromGen':      'AGREGAT',
       'syn.fromBank':     'BANK',
-      'word.inventory':   'zapas, nie sygnał',
-      'word.missing':     'do ustalenia',
       'err.yaml':         'Błąd YAML:',
       'err.load':         'Błąd wczytywania definicji:',
       'err.noStates':     'Brak sekcji "states"'
@@ -1429,26 +763,22 @@ const I18N = {
 
       'states.GENS_READY.description':
         'Sterownik zasilany, wyjścia w stanie bezpiecznym. Linia gaszenia zwarta do masy. Start blokują dwa niezależne warunki na dwóch różnych zegarach: żądanie musi być przytrzymane {t_request_hold} s (filtr wejścia) ORAZ sterownik musi stać w tym stanie {t_ready} s (zegar stanu). Drugi warunek liczy się tylko zaraz po cyklu albo po skasowaniu awarii; gdy sterownik już postał, jest dawno spełniony — i tak ma być, wypoczęty silnik nie potrzebuje postoju. Warunek `not running` blokuje start, jeśli silnik z jakiegoś powodu nadal chodzi.',
-      'states.GENS_READY.transitions.0.description':
-        'Żądanie przytrzymane {t_request_hold} s i postój w gotowości {t_ready} s minął — zapłon',
+      'states.GENS_READY.transitions.0.description': 'Żądanie {t_request_hold} s, postój {t_ready} s — rozruch',
 
-      'states.GENS_CRANKING.transitions.1.description': 'Wciśnięto przycisk gaszenia — zwarcie trzymane {t_kill} s niezależnie od długości naciśnięcia',
-      'states.GENS_PAUSE.transitions.1.description': 'Wciśnięto przycisk gaszenia — zwarcie trzymane {t_kill} s niezależnie od długości naciśnięcia',
-      'states.GENS_RUNNING.transitions.1.description': 'Wciśnięto przycisk gaszenia — zwarcie trzymane {t_kill} s niezależnie od długości naciśnięcia',
+      'states.GENS_CRANKING.transitions.1.description': 'Przycisk gaszenia',
+      'states.GENS_PAUSE.transitions.1.description': 'Przycisk gaszenia',
+      'states.GENS_RUNNING.transitions.1.description': 'Przycisk gaszenia',
       'states.GENS_CRANKING.description':
         'Rozrusznik załączony. Limit czasu chroni bendiks.',
-      'states.GENS_CRANKING.transitions.0.description': 'Alarm CO podczas rozruchu',
-      'states.GENS_CRANKING.transitions.2.description': 'Zanik sygnału z Deye w trakcie rozruchu',
+      'states.GENS_CRANKING.transitions.0.description': 'Alarm CO',
+      'states.GENS_CRANKING.transitions.2.description': 'Zanik sygnału z Deye',
       'states.GENS_CRANKING.transitions.3.description': 'Potwierdzenie pracy',
-      'states.GENS_CRANKING.transitions.4.description':
-        'Próba {attempts}/{attempts_max}: brak potwierdzenia pracy w {t_crank} s — wyczerpany limit prób',
-      'states.GENS_CRANKING.transitions.5.description':
-        'Próba {attempts}/{attempts_max}: brak potwierdzenia pracy w {t_crank} s — przerwa {t_pause} s',
+      'states.GENS_CRANKING.transitions.4.description': 'Próba {attempts}/{attempts_max} nieudana — limit wyczerpany',
+      'states.GENS_CRANKING.transitions.5.description': 'Próba {attempts}/{attempts_max} nieudana — przerwa {t_pause} s',
 
       'states.GENS_RUNNING.description': 'Silnik pracuje, falownik ładuje bank.',
-      'states.GENS_RUNNING.transitions.0.description': 'Alarm CO przy pracującym silniku',
-      'states.GENS_RUNNING.transitions.2.description':
-        'Zanik potwierdzenia pracy bez polecenia gaszenia — przyczyna poza sterownikiem',
+      'states.GENS_RUNNING.transitions.0.description': 'Alarm CO',
+      'states.GENS_RUNNING.transitions.2.description': 'Zanik potwierdzenia pracy bez polecenia',
       'states.GENS_RUNNING.transitions.3.description': 'Zanik sygnału z Deye',
 
       'states.GENS_FAULT.description':
@@ -1456,17 +786,15 @@ const I18N = {
       'states.GENS_FAULT.transitions.0.description': 'Kasowanie awarii',
 
       'states.GENS_PAUSE.description': 'Przerwa termiczna rozrusznika przed kolejną próbą.',
-      'states.GENS_PAUSE.transitions.0.description': 'Alarm CO między próbami',
-      'states.GENS_PAUSE.transitions.2.description': 'Potwierdzenie pracy przy rozruszniku OFF',
-      'states.GENS_PAUSE.transitions.3.description': 'Zanik sygnału z Deye między próbami — cykl przerwany',
-      'states.GENS_PAUSE.transitions.4.description': 'Przerwa {t_pause} s upłynęła — kolejna próba',
+      'states.GENS_PAUSE.transitions.0.description': 'Alarm CO',
+      'states.GENS_PAUSE.transitions.2.description': 'Potwierdzenie pracy',
+      'states.GENS_PAUSE.transitions.3.description': 'Zanik sygnału z Deye — cykl przerwany',
+      'states.GENS_PAUSE.transitions.4.description': 'Przerwa {t_pause} s minęła — kolejna próba',
 
       'states.GENS_STOPPING.description':
         'Przekaźnik zapłonu OFF — styk NC zwiera zapłon do masy.',
-      'states.GENS_STOPPING.transitions.0.description':
-        'Zanik potwierdzenia pracy ORAZ zwarcie trzymane {t_kill} s. Oba warunki: zwolnienie w chwili, gdy silnik przestaje się kręcić, czyniłoby gaszenie tak krótkim jak naciśnięcie, które o nie poprosiło — a po to ten przekaźnik istnieje, żeby tego uniknąć.',
-      'states.GENS_STOPPING.transitions.1.description':
-        'Potwierdzenie pracy utrzymane {t_rundown} s po zwarciu zapłonu — obwód gaszenia niesprawny'
+      'states.GENS_STOPPING.transitions.0.description': 'Zgaszony, zwarcie trzymane {t_kill} s',
+      'states.GENS_STOPPING.transitions.1.description': 'Potwierdzenie pracy przez {t_rundown} s — obwód gaszenia niesprawny',
     }
   }
 };
@@ -1508,7 +836,7 @@ main{flex:1 1 auto;min-height:0;display:grid;grid-template-columns:1fr 505px;
 .lewa{min-width:0;min-height:0;display:flex;flex-direction:column;gap:12px}
 .karta-we{min-height:0}
 .diagram{flex:1 1 55%;min-height:0;background:var(--panel);border:1px solid var(--linia);
-  border-radius:12px;padding:32px 10px 10px;display:flex;flex-direction:column}
+  border-radius:12px;padding:10px;display:flex;flex-direction:column}
 /* Płótno przewija się SAMO, pasek warstw zostaje na miejscu — gdyby svg leżał
    wprost w .diagram, przewijanie zabierałoby ze sobą przyciski warstw. */
 .plotno{flex:1 1 auto;min-height:0;overflow:auto;display:flex;
@@ -1660,20 +988,7 @@ textarea{flex:1 1 auto;min-height:300px;background:#0f151c;color:#cfe0ee;border:
   border:1px solid var(--linia);border-radius:7px;background:var(--panel2);color:#9fb4c7}
 .ikona:hover{background:#2c3a4a;border-color:#3d5062;color:var(--tekst)}
 .ikona svg{width:17px;height:17px;display:block;fill:currentColor}
-/* przełącznik warstw w diagramie */
 .diagram{position:relative;flex-direction:column}
-.warstwy{position:absolute;top:9px;left:11px;z-index:5;display:flex;align-items:center;gap:9px}
-.warstwy>button{padding:3px 9px;font-size:10.5px;font-weight:700;letter-spacing:.7px;
-  font-family:ui-monospace,monospace;border-radius:0;border:1px solid var(--linia);
-  background:#1b2530;color:#7f94a8}
-.warstwy>button:first-of-type{border-radius:6px 0 0 6px}
-.warstwy>button:last-of-type{border-radius:0 6px 6px 0}
-.warstwy>button+button{border-left:none}
-.warstwy>button.akt{background:var(--akcent);border-color:var(--akcent);color:#0d1922}
-.szk-plakietka{font-size:9.5px;letter-spacing:.8px;text-transform:uppercase;color:#e0a14b;
-  background:#2a2208;border:1px solid #5a4a12;border-radius:4px;padding:2px 7px;display:none}
-.szk-plakietka.widac{display:inline-block}
-.przej .brak{color:#e0a14b;display:block;margin-top:2px}
 /* pasmo synoptyczne — łańcuch energii, od żądania do odbiorów */
 .synoptyka{flex:0 0 auto;display:flex;align-items:stretch;gap:5px;flex-wrap:wrap;
   background:var(--panel);border:1px solid var(--linia);border-radius:10px;padding:5px 8px}
@@ -1795,10 +1110,6 @@ footer .jezyk button{padding:4px 8px;font-size:10.5px}
   <div class="lewa">
   <div class="synoptyka" id="synoptyka"></div>
   <div class="diagram">
-    <div class="warstwy">
-      <button data-w="GENS" class="akt">GENS_</button><button data-w="GAZ">GAZ_</button>
-      <span class="szk-plakietka" id="szkBadge"></span>
-    </div>
     <div class="plotno" id="plotno"><svg id="svg" preserveAspectRatio="xMidYMid meet"></svg></div>
   </div>
 
@@ -1915,14 +1226,9 @@ function ustawJezyk(l){
   if(bdz) bdz.title=T(dzwiekWl?'sound.on':'sound.off');
   document.querySelectorAll('.jezyk button').forEach(b=>b.classList.toggle('akt',b.dataset.lang===l));
   zapiszJezyk(l);
-  const bd=document.getElementById('szkBadge');
-  if(bd){ bd.textContent=T('skeleton.badge'); }
-  document.querySelectorAll('.warstwy > button').forEach(b=>{
-    b.title=T('layer.'+b.dataset.w.toLowerCase()+'.title');
-  });
   if(M){ naglowek(); rysujWejscia(); cacheWy=null; cacheLic=null; cachePom=null;
          const sy=document.getElementById('synoptyka'); if(sy) sy.innerHTML='';
-         ostatniStan=null; ostatniSvg=''; panelStanu(); rysujDziennik(); odswiez(); }
+         ostatniStan=null; ostatniSvg=''; rysujDziennik(); odswiez(); }
 }
 
 const esc=(s)=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -1937,50 +1243,6 @@ let M=null, stan=null, t=0, wStanie=0, we={}, lic={}, gra=false, petla=null, zro
 // warstwy: GENS_ jest maszyną żywą, GAZ_ i RET_ to szkielet z hybrid-skeleton.yaml,
 // rysowany poglądowo. Szkielet nie ma sygnałów ani parametrów, więc go nie symulujemy —
 // `gotowe()` nie jest na nim wywoływane i żaden węzeł nie jest „bieżący".
-let SZK=null, warstwa='GENS', wybSzk=null;
-// Zbiór wszystkich stanów trzech warstw — potrzebny, bo w schemacie
-// współdziałania klikalne są chipy z każdej z nich.
-function zrodloStanow(nazwa){
-  if(nazwa==='state_machine') return M?M.states:{};
-  return (SZK||{})[nazwa]||{};
-}
-function wszystkieStany(){
-  const w={};
-  for(const L of pasy()) Object.assign(w, zrodloStanow(L.source));
-  return w;
-}
-function pasy(){ return (((SZK||{}).coupling||{}).lanes)||[]; }
-function sprzegla(){ return (((SZK||{}).coupling||{}).links)||[]; }
-function wspolne(){ return (((SZK||{}).coupling||{}).shared)||{}; }
-function wybierzSzk(k){ wybSzk=k; panelStanu(); ostatniSvg=''; odswiez(); }
-function ustawWarstwe(w){
-  warstwa=w; wybSzk=null;
-  document.querySelectorAll('.warstwy > button').forEach(b=>b.classList.toggle('akt',b.dataset.w===w));
-  const bd=document.getElementById('szkBadge');
-  bd.classList.toggle('widac', w!=='GENS'); bd.textContent=T('skeleton.badge');
-  ostatniStan=null; ostatniSvg='';
-  panelStanu(); odswiez();
-}
-function panelStanu(){
-  if(warstwa==='GENS'){ ostatniStan=null; return; }   // wypełni odswiez()
-  const S=wszystkieStany();
-  const nz=document.getElementById('stanNazwa'), op=document.getElementById('stanOpis');
-  const pc=document.getElementById('przejscia');
-  pc.innerHTML='';
-  if(!wybSzk || !S[wybSzk]){ nz.textContent=warstwa+'_'; op.textContent=T('skeleton.pick'); return; }
-  const v=S[wybSzk];
-  nz.textContent=wybSzk;
-  op.textContent=v.description||'';
-  for(const q of (v.transitions||[])){
-    const e=document.createElement('div'); e.className='przej';
-    let w='→ <b>'+esc(q.to)+'</b>';
-    if(q.when!==undefined) w+=' <code>'+esc(String(q.when))+'</code>';
-    if(q.after!==undefined) w+=' <code>'+esc(T('word.after')+' '+q.after)+'</code>';
-    if(q.description) w+='<small>'+esc(q.description)+'</small>';
-    if(q.missing) w+='<small class="brak">⚠ '+esc(T('word.missing'))+': '+esc(q.missing)+'</small>';
-    e.innerHTML=w; pc.appendChild(e);
-  }
-}
 
 function wyrazenie(txt){
   return String(txt)
@@ -2428,28 +1690,32 @@ function warpTeraz(){
 }
 function krokDeye(){
   const d=PL.deye, s=INST.stanDeye, praca=!!we.running;
-  // Martwa strefa na granicy PV/rozładowanie. Bez niej, gdy PV jest bliskie
-  // odbiorom, stan migotał po kilka razy na sekundę i zasypywał dziennik.
-  // Wejście w PV wymaga 5 % nadwyżki, wyjście 5 % niedoboru.
-  const DB=0.05;
-  const nadwyzka = (s==='DEYE_PV')
-    ? (POM.p_pv > POM.p_load*(1-DB))
-    : (POM.p_pv > POM.p_load*(1+DB)+30);
+  // Stan bez żądania wynika wprost z BILANSU MOCY, a nie z par przejść.
+  // Trzy sytuacje, a nie dwie: pokrycie odbiorów to nie to samo co ładowanie
+  // banku. Każda granica ma martwą strefę, inaczej status migocze, gdy PV
+  // stoi dokładnie na progu — zdarzyło się i zasypywało dziennik.
+  const nadw = POM.p_pv - POM.p_load;
+  const WL = (d.p_surplus_on===undefined) ? 120 : d.p_surplus_on;
+  const WYL = (d.p_surplus_off===undefined) ? 80 : d.p_surplus_off;
+  const ladujePv = (s==='DEYE_PV_CHARGING') ? (nadw > WYL) : (nadw > WL);
+  const pokrywa  = (s==='DEYE_PV' || s==='DEYE_PV_CHARGING')
+                   ? (POM.p_pv > POM.p_load*0.95)
+                   : (POM.p_pv > POM.p_load*1.05 + 30);
+  const bezZadania = ladujePv ? 'DEYE_PV_CHARGING'
+                   : pokrywa  ? 'DEYE_PV' : 'DEYE_DISCHARGING';
   let n=s;
   switch(s){
     case 'DEYE_PV':
-      if(INST.soc<=d.gen_start_soc) n='DEYE_REQUEST';
-      else if(!nadwyzka) n='DEYE_DISCHARGING'; break;
+    case 'DEYE_PV_CHARGING':
     case 'DEYE_DISCHARGING':
-      if(INST.soc<=d.gen_start_soc) n='DEYE_REQUEST';
-      else if(nadwyzka) n='DEYE_PV'; break;
+      n = (INST.soc<=d.gen_start_soc) ? 'DEYE_REQUEST' : bezZadania; break;
     case 'DEYE_REQUEST':
       // próg STOP, nie START — zwolnienie styku na progu startu zatrzymałoby
       // agregat w chwili, w której zaczął pomagać. To jest ta histereza.
-      if(INST.soc>=d.gen_stop_soc) n = nadwyzka?'DEYE_PV':'DEYE_DISCHARGING';
+      if(INST.soc>=d.gen_stop_soc) n = bezZadania;
       else if(praca) n='DEYE_CHARGING'; break;
     case 'DEYE_CHARGING':
-      if(INST.soc>=d.gen_stop_soc) n = nadwyzka?'DEYE_PV':'DEYE_DISCHARGING';
+      if(INST.soc>=d.gen_stop_soc) n = bezZadania;
       else if(!praca) n='DEYE_REQUEST'; break;
   }
   if(n!==s){
@@ -2692,7 +1958,6 @@ function dopasujPlotno(vbW, vbH, czcionkaBazowa){
 }
 
 function rysujSvg(){
-  if(warstwa!=='GENS'){ rysujWspoldzialanie(); return; }
   const S=M.states;
   if(!S || !Object.keys(S).length) { document.getElementById('svg').innerHTML=''; return; }
   const W=160, H=56, MAR=26;
@@ -2753,159 +2018,6 @@ function rysujSvg(){
   svg.innerHTML=g;
 }
 
-// =====================================================================
-//  SCHEMAT WSPÓŁDZIAŁANIA — trzy maszyny i sprzęgła między nimi.
-//
-//  To NIE jest trzeci graf stanów. Pełny graf każdej warstwy jest czytelny
-//  w YAML-u, a tego, jak one się ze sobą zazębiają, nie widać nigdzie indziej.
-//  Dlatego każda maszyna jest tu pasem z przebiegiem procesu, a cała treść
-//  schematu to TRZY SPRZĘGŁA — rysowane z sekcji `coupling:` w YAML-u,
-//  więc błędne sprzęgło jest widoczne, nie zakopane w komentarzu.
-//
-//  Sprzęgło `store_kg` jest kreskowane celowo: retorta i gazogenerator NIE
-//  wymieniają sygnału. Są sprzężone ZAPASEM — węgiel leży 8 dni na sezonowaniu.
-//  Skala dni, nie sekund, więc między tymi maszynami nie ma przejścia stanu.
-// =====================================================================
-// Szerokość układu nie zależy od rozciągnięcia w pionie, więc da się ją policzyć
-// z góry — jest potrzebna, zanim ustalimy współczynnik rozciągnięcia.
-function maxPrawaWstepna(){
-  const CW=112, PITCH=122, ODSTEP_AWARII=22;
-  let maks=0;
-  for(const p of pasy()){
-    const S=zrodloStanow(p.source); let x=0;
-    for(const k of p.order){ if((S[k]||{}).fault) x+=ODSTEP_AWARII; x+=PITCH; }
-    maks=Math.max(maks, x-(PITCH-CW));
-  }
-  return maks;
-}
-function rysujWspoldzialanie(){
-  const svg=document.getElementById('svg');
-  const L=pasy(); if(!L.length){ svg.innerHTML=''; return; }
-  // Geometria dobrana pod PROPORCJE PANELU, nie pod wygodę pisania: panel jest
-  // bardzo szeroki i niski (ok. 5,6:1), a 10 chipów w rzędzie daje 1660 jednostek
-  // szerokości. Żeby tekst nie zjechał poniżej czytelności, całość musi zmieścić
-  // się w ok. 320 jednostkach wysokości — stąd ciasne pasy i wąskie kanały.
-  const CW=112, PITCH=122, ODSTEP_AWARII=22, MAR=10;
-  // Schemat jest szeroki, więc skaluje go SZEROKOŚĆ panelu, a wysokości zwykle
-  // zostaje zapas. Zamiast zostawiać pod spodem pustkę, rozciągamy pasy w pionie
-  // aż proporcje treści dogonią proporcje panelu. Czcionki zostają bez zmian —
-  // rośnie oddech między pasami, a nie rozmiar liter.
-  const pl0=document.getElementById('plotno');
-  const szerUkl=(maxPrawaWstepna()+20+2*MAR);
-  const skW=Math.max(60,pl0.clientWidth)/szerUkl;
-  const wysDost=Math.max(60,pl0.clientHeight)/skW;          // w jednostkach układu
-  const f=Math.max(1, Math.min(1.55, wysDost/300));
-  const CH=Math.round(31*f), ETYK=Math.round(14*f), PAD=Math.round(6*f),
-        LGAP=Math.round(95*f);
-  const poz={}; let maxPrawa=0;
-  L.forEach((p,i)=>{
-    const yb=ETYK+i*LGAP;                       // góra ramki pasa
-    let x=0;
-    p.order.forEach((k)=>{
-      const S=zrodloStanow(p.source);
-      if((S[k]||{}).fault) x+=ODSTEP_AWARII;    // awaria odsunięta — nie należy do przebiegu
-      poz[k]={x:x, y:yb+PAD, pas:i};
-      x+=PITCH;
-    });
-    maxPrawa=Math.max(maxPrawa, x-(PITCH-CW));
-  });
-  const dolOstatniego = ETYK+(L.length-1)*LGAP+CH+2*PAD;
-  const yWsp = dolOstatniego+11;
-  let g='<defs>'+
-    '<marker id="wsA" markerWidth="8" markerHeight="8" refX="7" refY="2.7" orient="auto">'+
-      '<path d="M0,0 L7,2.7 L0,5.4 z" fill="#7BAFD4"/></marker>'+
-    '<marker id="wsI" markerWidth="8" markerHeight="8" refX="7" refY="2.7" orient="auto">'+
-      '<path d="M0,0 L7,2.7 L0,5.4 z" fill="#e0a14b"/></marker>'+
-    '<marker id="wsF" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto">'+
-      '<path d="M0,0 L7.5,3 L0,6 z" fill="#4fb477"/></marker>'+
-    '<marker id="wsS" markerWidth="7" markerHeight="7" refX="6" refY="2.3" orient="auto">'+
-      '<path d="M0,0 L6,2.3 L0,4.6 z" fill="#4a5e74"/></marker></defs>';
-
-  L.forEach((p,i)=>{
-    const yb=ETYK+i*LGAP, zywy=(p.source==='state_machine');
-    const S=zrodloStanow(p.source);
-    // etykieta NAD ramką, nie w niej
-    // prefiks z lewej, opis z PRAWEJ: pionowe odcinki sprzęgieł schodzą przy
-    // lewych kolumnach i przecinałyby opis umieszczony obok prefiksu
-    g+='<text x="2" y="'+(yb-5)+'" font-family="ui-monospace,monospace" font-size="11" '+
-       'font-weight="700" fill="'+(zywy?'#F7A800':'#8da0b3')+'">'+esc(p.layer)+'</text>'+
-       '<text x="'+(maxPrawa+8)+'" y="'+(yb-5)+'" text-anchor="end" font-size="10.5" '+
-       'fill="#687c90">'+esc(p.label||'')+'</text>';
-    g+='<rect x="-10" y="'+yb+'" width="'+(maxPrawa+20)+'" height="'+(CH+2*PAD)+'" rx="10" '+
-       'fill="'+(zywy?'#172029':'#19212a')+'" stroke="'+(zywy?'#3a4e63':'#2a3742')+'" stroke-width="1.2"/>';
-    p.order.forEach((k,j)=>{
-      const v=S[k]||{}, x=poz[k].x, y=poz[k].y;
-      const awa=!!v.fault, wyb=(k===wybSzk), biez=(zywy&&k===stan);
-      const tlo = wyb?'#7BAFD4' : (awa?'#2e2026' : (biez?'#F7A800':'#222e3b'));
-      const kol = wyb?'#0d1922' : (biez?'#2a1d00' : (awa?'#cf9b92':'#cfe0ee'));
-      const obr = wyb?'#7BAFD4' : (awa?'#6b3b33':'#33455a');
-      g+='<g style="cursor:pointer" onclick="wybierzSzk(\''+k+'\')">'+
-         '<rect x="'+x+'" y="'+y+'" width="'+CW+'" height="'+CH+'" rx="7" fill="'+tlo+'" '+
-         'stroke="'+obr+'" stroke-width="'+(wyb?2.2:1.1)+'"/>'+
-         '<text x="'+(x+CW/2)+'" y="'+(y+CH/2+4)+'" text-anchor="middle" '+
-         'font-family="ui-monospace,monospace" font-size="10.5" font-weight="700" fill="'+kol+'">'+
-         esc(k.replace(p.layer,''))+'</text>'+
-         '<title>'+esc(v.description ? (zywy?podstaw(opisStanu(k)):v.description) : k)+'</title></g>';
-      const nast=p.order[j+1];
-      if(nast && !(S[nast]||{}).fault){
-        g+='<line x1="'+(x+CW+2)+'" y1="'+(y+CH/2)+'" x2="'+(poz[nast].x-3)+'" y2="'+(y+CH/2)+'" '+
-           'stroke="#3f5366" stroke-width="1.1" marker-end="url(#wsS)"/>';
-      }
-    });
-  });
-
-  // Sprzęgła prowadzone kanałami MIĘDZY pasami. Kanały rozsunięte, żeby
-  // gas_ready i engine_drawing nie nałożyły się etykietami w tym samym korytarzu.
-  // Kanał wybiera się z PARY PASÓW, które sprzęgło łączy, nie z nazwy sygnału —
-  // nazwy się zmieniają, geometria nie. Dwa sprzęgła w tym samym korytarzu
-  // (GAZ_→GENS_ i GENS_→GAZ_) rozsuwa kierunek.
-  const STYL={
-    phase:     {kolor:'#4fb477', marker:'wsF', kreska:'', grubosc:2.1, etyk:'word.phase'},
-    inventory: {kolor:'#e0a14b', marker:'wsI', kreska:'stroke-dasharray="6 4" ', grubosc:1.5, etyk:'word.inventory'},
-    signal:    {kolor:'#7BAFD4', marker:'wsA', kreska:'', grubosc:1.5, etyk:null}
-  };
-  sprzegla().forEach(l=>{
-    const a=poz[l.from], b=poz[l.to]; if(!a||!b) return;
-    const st=STYL[l.kind]||STYL.signal, kolor=st.kolor;
-    const wDol=(b.pas>a.pas);
-    const szczelina=Math.min(a.pas,b.pas);
-    const kan=ETYK+(szczelina+1)*LGAP-Math.round((wDol?34:16)*f);
-    const ax=a.x+CW/2, bx=b.x+CW/2;
-    const ay=wDol?(a.y+CH):a.y, by=wDol?b.y:(b.y+CH);
-    g+='<path d="M '+ax+' '+ay+' L '+ax+' '+kan+' L '+bx+' '+kan+' L '+bx+' '+(by+(wDol?-4:4))+'" '+
-       'fill="none" stroke="'+kolor+'" stroke-width="'+st.grubosc+'" '+
-       st.kreska+'marker-end="url(#'+st.marker+')">'+
-       '<title>'+esc(l.from+' → '+l.to+'\n'+l.signal+(l.delay?'  ('+l.delay+')':'')+
-       '\n\n'+(l.description||''))+'</title></path>';
-    const et=l.signal+(l.delay?' · '+l.delay:'')+(st.etyk?'  ['+T(st.etyk)+']':'');
-    const szer=et.length*5.8+14, ex=Math.max(szer/2, Math.min(maxPrawa-szer/2, (ax+bx)/2));
-    g+='<rect x="'+(ex-szer/2)+'" y="'+(kan-8.5)+'" width="'+szer+'" height="17" rx="5" '+
-       'fill="#141b24" stroke="'+kolor+'" stroke-width="1"/>'+
-       '<text x="'+ex+'" y="'+(kan+4)+'" text-anchor="middle" font-family="ui-monospace,monospace" '+
-       'font-size="9.5" font-weight="700" fill="'+kolor+'">'+esc(et)+'</text>';
-  });
-
-  const w=wspolne();
-  if((w.signals||[]).length){
-    g+='<rect x="-10" y="'+yWsp+'" width="'+(maxPrawa+20)+'" height="22" rx="7" '+
-       'fill="#171c25" stroke="#3b4a5c" stroke-width="1.1" stroke-dasharray="5 4"/>'+
-       '<text x="8" y="'+(yWsp+15)+'" font-family="ui-monospace,monospace" font-size="9.5" '+
-       'fill="#7f94a8">'+esc(T('shared.label')+':')+'</text>'+
-       '<text x="'+(8+T('shared.label').length*5.8+14)+'" y="'+(yWsp+15)+'" '+
-       'font-family="ui-monospace,monospace" font-size="9.5" font-weight="700" fill="#9fb4c7">'+
-       esc(w.signals.join('   ·   '))+'</text>'+
-       '<title>'+esc(w.description||'')+'</title>';
-    const wy=((SZK||{}).coupling||{}).exclusion;
-    if(wy){
-      g+='<title>'+esc(wy)+'</title>';
-    }
-  }
-
-  const vbW=maxPrawa+20+2*MAR, vbH=yWsp+22+MAR+MAR;
-  svg.setAttribute('viewBox', (-10-MAR)+' '+(-MAR)+' '+vbW+' '+vbH);
-  dopasujPlotno(vbW, vbH, 10.5);                         // czcionka chipu schematu
-  svg.innerHTML=g;
-}
 let cacheWy=null, cacheLic=null, ostatniStan=null, ostatniSvg='';
 
 function budujWyjscia(){
@@ -3008,7 +2120,7 @@ function odswiezSynoptyke(){
     load:   { w: (POM.p_load/1000).toFixed(1)+' kW',kl: POM.p_load>0?'on':'off' },
     bank:   { w: POM.soc.toFixed(0)+' %',
               kl: POM.soc<=prog?'alarm':(POM.p_bank>0?'on':'warn') },
-    deye:   { w: st.replace('DEYE_',''),            kl: zad?'warn':'on' },
+    deye:   { w: st.replace('DEYE_','').replace(/_/g,'/'), kl: zad?'warn':'on' },
     request:{ w: zad?'ON':'OFF',                    kl: zad?'on':'off' },
     engine: { w: praca?T('syn.running'):(kreci?T('syn.cranking'):T('syn.stopped')),
               kl: praca?'on':(kreci?'warn':'off') },
@@ -3119,13 +2231,6 @@ function odswiez(){
       ? (lic[k]+'/'+limit) : lic[k];
   cacheLic.__czas.textContent=wStanie.toFixed(1)+' s';
 
-  if(warstwa!=='GENS'){
-    // szkielet: kolumny wejść/wyjść/dziennika nadal pokazują ŻYWY agregat,
-    // bo on się nie zatrzymał. Zmienia się wyłącznie diagram i kolumna stanu.
-    const sig='SZK|'+warstwa+'|'+wybSzk;
-    if(sig!==ostatniSvg){ rysujSvg(); ostatniSvg=sig; }
-    return;
-  }
   if(stan!==ostatniStan){
     document.getElementById('stanNazwa').textContent=stan;
     document.getElementById('stanOpis').textContent=podstaw(opisStanu(stan));
@@ -3188,9 +2293,6 @@ document.getElementById('tempo').onchange=()=>{ if(gra){ustawGre(false);ustawGre
 document.querySelectorAll('.jezyk button').forEach(b=>{
   b.onclick=()=>ustawJezyk(b.dataset.lang);
 });
-document.querySelectorAll('.warstwy > button').forEach(b=>{
-  b.onclick=()=>ustawWarstwe(b.dataset.w);
-});
 // Kliknięcie w ten przycisk jest też gestem, którego przeglądarka wymaga,
 // zanim pozwoli cokolwiek odtworzyć — dlatego kontekst tworzymy dopiero tutaj.
 document.getElementById('bDzwiek').onclick=()=>ustawDzwiek(!dzwiekWl);
@@ -3219,9 +2321,6 @@ document.getElementById('bPrzywroc').onclick=()=>{
     const plEl=document.getElementById('plantYaml');
     if(plEl){ try{ PL=jsyaml.load(plEl.textContent); }catch(e){ PL=null;
       console.warn('instalacja nie wczytana:', e.message); } }
-    const szkEl=document.getElementById('skeletonYaml');
-    if(szkEl){ try{ SZK=jsyaml.load(szkEl.textContent); }catch(e){ SZK=null;
-      console.warn('szkielet hybrydy nie wczytany:', e.message); } }
     zrodloOryg=document.getElementById('defaultYaml').textContent.trim();
     document.getElementById('yaml').value=zrodloOryg;
     zaladuj(zrodloOryg);
