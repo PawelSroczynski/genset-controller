@@ -118,7 +118,7 @@ measurements:
     label: PV power
     unit: W
     min: 0
-    max: 4320
+    max: 4500
     model: pv_power
     description: 8 x JA Solar JAM72D30-540/MB, 4.32 kWp on the barn.
 
@@ -2102,11 +2102,10 @@ function gotowe(p){
 //  `u_gen` to wielkość, którą realnie mierzy przekaźnik nadzoru na IN-02,
 //  a `u_batt` to powód, dla którego liczba prób rozruchu jest budżetem.
 // =====================================================================
-let POM={}, pvFaza=0;
+let POM={};
 function resetPomiary(){
   POM={ u_gen:0, t_engine:18, u_batt:12.8, soc:46, p_pv:0,
         p_load:0, p_bank:0, gen_load:0 };
-  pvFaza=Math.random()*Math.PI*2;
 }
 
 // =====================================================================
@@ -2119,7 +2118,7 @@ function resetPomiary(){
 // =====================================================================
 let PL=null, INST={}, modelDeye=true;
 function resetInstalacji(){
-  INST={ soc:62, stanDeye:'DEYE_BANK', pv_frac:0.0, load_kw:(PL?PL.loads.base_kw:0.5),
+  INST={ soc:62, stanDeye:'DEYE_BANK', pv_kw:0.0, load_kw:(PL?PL.loads.base_kw:0.5),
          prysznic:0, tInst:0, warp:1 };
   if(PL) POM.soc=INST.soc;
 }
@@ -2165,10 +2164,10 @@ function modelInstalacji(dtSter){
   const dt=dtSter*w;                       // sekundy instalacji
   INST.tInst+=dt;
 
-  // PV — powolny przebieg dnia, skalowany suwakiem
-  pvFaza += dt/3600*0.26;
-  const dzien=Math.max(0, Math.sin(pvFaza));
-  POM.p_pv = INST.pv_frac * PL.pv.kwp*1000 * dzien;
+  // PV — moc wprost z suwaka. Był tu jeszcze przebieg dobowy, przez który
+  // suwak na maksimum potrafił dawać zero, bo mnożnik dnia wynosił zero.
+  // Suwak ma ustawiać moc, a nie udział w czymś niewidocznym.
+  POM.p_pv = INST.pv_kw*1000;
 
   // odbiory
   if(INST.prysznic>0) INST.prysznic=Math.max(0, INST.prysznic-dt);
@@ -2336,8 +2335,8 @@ function rysujWejscia(){
       c.appendChild(d);
       document.getElementById('w_'+klucz).textContent=fn(null)+' '+jedn;
     };
-    suw('pv', T('plant.pv'), 0, 100, 5, INST.pv_frac*100, '%',
-        v=>{ if(v!==null) INST.pv_frac=v/100; return (INST.pv_frac*100).toFixed(0); });
+    suw('pv', T('plant.pv'), 0, 4.5, 0.1, INST.pv_kw, 'kW',
+        v=>{ if(v!==null) INST.pv_kw=v; return INST.pv_kw.toFixed(1); });
     suw('load', T('plant.load'), 0.2, 2.0, 0.1, INST.load_kw, 'kW',
         v=>{ if(v!==null) INST.load_kw=v; return INST.load_kw.toFixed(1); });
 

@@ -109,7 +109,7 @@ measurements:
     label: PV power
     unit: W
     min: 0
-    max: 4320
+    max: 4500
     model: pv_power
     description: 8 x JA Solar JAM72D30-540/MB, 4.32 kWp on the barn.
 
