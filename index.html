@@ -48,10 +48,20 @@ parameters:
   # controller never cranks again the instant the engine has stopped.
   # This one is correctly measured as time in the state.
   t_ready: 5             # s
+  # Ignition must be live BEFORE the starter turns the engine over. With both
+  # relays closing together the first compression strokes can happen while the
+  # interposing relay is still settling, so the engine is turned without spark —
+  # battery spent for nothing, and an attempt wasted off a budget of three.
+  t_prestart: 1          # s — ignition on, starter still off
   t_crank: 3             # s — maximum duration of a single cranking attempt
   t_pause: 10            # s — starter rest between attempts
   attempts_max: 3
   t_rundown: 10          # s — time allowed for the engine to come to a stop
+  # How long the ignition is held shorted to ground when stopping. A button is
+  # not enough: a single-cylinder engine can ride through a brief short and keep
+  # running, so the duration cannot depend on how long somebody holds a button.
+  # The relay holds it, and the state machine holds the relay.
+  t_kill: 3              # s
 
 counters:
   attempts: 0
@@ -149,6 +159,9 @@ inputs:
   running:
     pin: IN-02
     label: Run confirmed
+    sound_loop: engine          # pracujący silnik, dopóki potwierdzenie trwa
+    sound_on: engine-start      # kręcenie, zapłon, narost obrotów
+    sound_off: engine-stop      # obroty siadają, na końcu klaknięcie zaworów
     description: >-
       External DIN-rail voltage monitoring relay wired to the genset output
       phase. Its dry contact feeds IN-02.
@@ -164,6 +177,17 @@ inputs:
       ON = carbon monoxide detected. The detector needs a second contact for
       the hardwired permit chain, which stops the engine independently of
       the controller.
+  kill_btn:
+    pin: IN-05
+    label: Kill button
+    description: >-
+      Momentary pushbutton in the cabinet door. It is a REQUEST, not the kill
+      itself: pressing it sends the machine to GENS_STOPPING, which energises
+      the kill relay and holds the short for {t_kill} s regardless of how long
+      the button was held. Wiring the button straight into the ignition line
+      means a short press leaves the engine running.
+    momentary: true
+
   reset:
     pin: IN-04
     label: Fault reset
@@ -187,9 +211,28 @@ outputs:
     pin: RELAY-02
     label: Starter relay
     short: STARTER
+    # Dźwięk deklarowany w danych, nie wpisany w kod symulatora: `sound_loop`
+    # gra, dopóki sygnał jest aktywny. Dzięki temu dmuchawa gazogeneratora
+    # dostanie swój głos przez dopisanie jednej linii i pliku.
+    sound_loop: starter
     description: >-
       Drives the starter contactor coil; it does not feed the starter directly.
       ON = contactor closed, starter cranking. OFF = contactor open.
+
+  kill:
+    pin: RELAY-03
+    label: Kill relay
+    short: KILL
+    description: >-
+      ENERGISE-TO-STOP, and deliberately the opposite polarity to the ignition
+      relay. Energised, its contact shorts the ignition to ground: a positive,
+      timed kill. It is NOT the inverse of the ignition relay — it is energised
+      only while the engine is being stopped and in a fault, not while idle.
+      When idle the NC contact of the de-energised ignition relay already holds
+      the short, and keeping a second coil energised for hours would waste power
+      and wear it for nothing.
+      The two paths are independent on purpose: one fails safe on loss of power,
+      the other acts positively on command.
 
 states:
   GENS_READY:
@@ -204,23 +247,50 @@ states:
       the controller has stood idle it is long satisfied, and that is correct —
       a rested engine needs no dwell. The `not running` term blocks the start
       if the engine is somehow still turning.
-    outputs: { ignition: false, starter: false }
+    outputs: { ignition: false, starter: false, kill: false }
     actions: { attempts: 0 }
     transitions:
-      - to: GENS_CRANKING
+      - to: GENS_PRESTART
         when: gen_request and not co_alarm and not running
         after: t_ready
-        description: Request held {t_request_hold} s and ready dwell {t_ready} s elapsed — crank
-
-  GENS_CRANKING:
+        description: Request held {t_request_hold} s and ready dwell {t_ready} s elapsed — ignition on
+  GENS_PRESTART:
     x: 300
     y: 40
+    description: >-
+      Ignition relay energised, starter still open. The engine is not turning
+      yet: this second exists so that spark is live before the first
+      compression stroke. Leaving here needs no stopping sequence — nothing is
+      running, so the ignition simply drops.
+    outputs: { ignition: true, starter: false, kill: false }
+    transitions:
+      - to: GENS_FAULT
+        when: co_alarm
+        description: CO alarm before cranking
+      - to: GENS_STOPPING
+        when: kill_btn
+        description: Kill button pressed — short held {t_kill} s regardless of the press
+      - to: GENS_READY
+        when: not gen_request
+        description: Deye signal lost before the starter engaged
+      - to: GENS_RUNNING
+        when: running
+        description: Run confirmed without cranking — engine was already turning
+      - to: GENS_CRANKING
+        after: t_prestart
+        description: Ignition live {t_prestart} s — engage the starter
+  GENS_CRANKING:
+    x: 530
+    y: 40
     description: Starter engaged. The time limit protects the bendix.
-    outputs: { ignition: true, starter: true }
+    outputs: { ignition: true, starter: true, kill: false }
     transitions:
       - to: GENS_FAULT
         when: co_alarm
         description: CO alarm during cranking
+      - to: GENS_STOPPING
+        when: kill_btn
+        description: Kill button pressed — short held {t_kill} s regardless of the press
       - to: GENS_STOPPING
         when: not gen_request
         description: Deye signal lost while cranking
@@ -236,45 +306,18 @@ states:
         after: t_crank
         actions: { attempts: "+1" }
         description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_crank} s — {t_pause} s pause"
-
-  GENS_RUNNING:
-    x: 530
-    y: 40
-    description: Engine running, inverter charging the bank.
-    outputs: { ignition: true, starter: false }
-    transitions:
-      - to: GENS_FAULT
-        when: co_alarm
-        description: CO alarm with the engine running
-      - to: GENS_FAULT
-        when: not running
-        description: Run confirmation lost without a stop command — cause outside the controller
-      - to: GENS_STOPPING
-        when: not gen_request
-        description: Deye signal lost
-
-  GENS_FAULT:
-    x: 70
-    y: 170
-    fault: true
-    description: >-
-      Ignition relay OFF. Requires a manual reset. Resetting is blocked while
-      run confirmation persists — that would mean a defective kill circuit.
-    outputs: { ignition: false, starter: false }
-    transitions:
-      - to: GENS_READY
-        when: reset and not co_alarm and not running
-        description: Fault reset
-
   GENS_PAUSE:
-    x: 300
+    x: 530
     y: 170
     description: Starter thermal rest before the next attempt.
-    outputs: { ignition: true, starter: false }
+    outputs: { ignition: true, starter: false, kill: false }
     transitions:
       - to: GENS_FAULT
         when: co_alarm
         description: CO alarm between attempts
+      - to: GENS_STOPPING
+        when: kill_btn
+        description: Kill button pressed — short held {t_kill} s regardless of the press
       - to: GENS_RUNNING
         when: running
         description: Run confirmed with the starter OFF
@@ -284,19 +327,53 @@ states:
       - to: GENS_CRANKING
         after: t_pause
         description: "{t_pause} s pause elapsed — next attempt"
-
+  GENS_RUNNING:
+    x: 760
+    y: 40
+    description: Engine running, inverter charging the bank.
+    outputs: { ignition: true, starter: false, kill: false }
+    transitions:
+      - to: GENS_FAULT
+        when: co_alarm
+        description: CO alarm with the engine running
+      - to: GENS_STOPPING
+        when: kill_btn
+        description: Kill button pressed — short held {t_kill} s regardless of the press
+      - to: GENS_FAULT
+        when: not running
+        description: Run confirmation lost without a stop command — cause outside the controller
+      - to: GENS_STOPPING
+        when: not gen_request
+        description: Deye signal lost
   GENS_STOPPING:
-    x: 530
+    x: 760
     y: 170
     description: Ignition relay OFF — the NC contact shorts the ignition to ground.
-    outputs: { ignition: false, starter: false }
+    outputs: { ignition: false, starter: false, kill: true }
     transitions:
       - to: GENS_READY
         when: not running
-        description: Run confirmation lost
+        after: t_kill
+        description: >-
+          Run confirmation lost AND the short held {t_kill} s. Both conditions:
+          releasing the moment the engine stops turning would make the kill as
+          short as the press that asked for it, which is the problem this relay
+          exists to remove.
       - to: GENS_FAULT
         after: t_rundown
         description: "Run confirmation held {t_rundown} s after the ignition was shorted — kill circuit defective"
+  GENS_FAULT:
+    x: 70
+    y: 170
+    fault: true
+    description: >-
+      Ignition relay OFF. Requires a manual reset. Resetting is blocked while
+      run confirmation persists — that would mean a defective kill circuit.
+    outputs: { ignition: false, starter: false, kill: true }
+    transitions:
+      - to: GENS_READY
+        when: reset and not co_alarm and not running
+        description: Fault reset
 </script>
 <script id="plantYaml" type="text/yaml">
 name: Installation — the world the controller sits in
@@ -383,7 +460,7 @@ deye:
 # =====================================================================
 clock:
   warp: 240                # 1 s of simulation = 4 min of plant, while idle
-  realtime_states: [GENS_CRANKING, GENS_PAUSE, GENS_STOPPING, GENS_FAULT]
+  realtime_states: [GENS_PRESTART, GENS_CRANKING, GENS_PAUSE, GENS_STOPPING, GENS_FAULT]
   realtime_on_request: true   # also drop to 1x as soon as the request appears,
                               # so the request hold and the ready dwell are
                               # watchable. IN GENS_READY ONLY: the request stays
@@ -583,7 +660,8 @@ coupling:
     - layer: GENS_
       label: Genset FH9000R — live machine, simulated in the GENS_ view
       source: state_machine
-      order: [GENS_READY, GENS_CRANKING, GENS_PAUSE, GENS_RUNNING, GENS_STOPPING, GENS_FAULT]
+      order: [GENS_READY, GENS_PRESTART, GENS_CRANKING, GENS_PAUSE, GENS_RUNNING,
+              GENS_STOPPING, GENS_FAULT]
   links:
     - from: GAZ_READY
       to: GENS_READY
@@ -1324,12 +1402,19 @@ const I18N = {
       'inputs.co_alarm.label': 'Alarm CO',
       'inputs.co_alarm.description':
         'Styk alarmowy czujnika tlenku węgla w maszynowni, podany na IN-03. ON = wykryty tlenek węgla. Czujnik potrzebuje drugiego styku — do sprzętowego łańcucha zezwolenia, który gasi silnik niezależnie od sterownika.',
+      'inputs.kill_btn.label': 'Przycisk gaszenia',
+      'inputs.kill_btn.description':
+        'Przycisk monostabilny w drzwiach szafy. To ŻĄDANIE, nie samo gaszenie: wciśnięcie przenosi maszynę do GENS_STOPPING, który wzbudza przekaźnik gaszenia i trzyma zwarcie przez {t_kill} s niezależnie od tego, jak długo przycisk był trzymany. Wpięcie przycisku wprost w linię zapłonu sprawia, że krótkie naciśnięcie zostawia pracujący silnik.',
       'inputs.reset.label': 'Reset awarii',
       'inputs.reset.description':
         'Przycisk monostabilny w drzwiach szafy, podany na IN-04. ON = wciśnięty. Wraca do OFF po puszczeniu.',
 
       'outputs.ignition.short': 'ZAPŁON',
       'outputs.starter.short': 'ROZRUSZNIK',
+      'outputs.kill.short': 'GASZENIE',
+      'outputs.kill.label': 'Przekaźnik gaszenia',
+      'outputs.kill.description':
+        'ENERGIZUJ-ABY-ZGASIĆ, czyli odwrotna polaryzacja niż przekaźnik zapłonu. Wzbudzony zwiera zapłon do masy: gaszenie czynne, o określonym czasie trwania. NIE jest odwrotnością przekaźnika zapłonu — wzbudza się tylko na czas zatrzymywania i w awarii, a nie w spoczynku. W spoczynku zwarcie i tak trzyma styk NC odpadniętego przekaźnika zapłonu, więc druga cewka pod napięciem przez godziny zużywałaby się bez powodu. Dwie niezależne drogi celowo: jedna zawodzi bezpiecznie przy zaniku zasilania, druga działa czynnie na polecenie.',
       'outputs.ignition.label': 'Przekaźnik zapłonu',
       'outputs.ignition.description':
         'ON = styk NC w linii gaszenia otwarty, obwód zapłonu czynny. OFF = zapłon zwarty do masy, silnik zatrzymany.',
@@ -1363,23 +1448,33 @@ const I18N = {
       'states.GENS_READY.description':
         'Sterownik zasilany, wyjścia w stanie bezpiecznym. Linia gaszenia zwarta do masy. Start blokują dwa niezależne warunki na dwóch różnych zegarach: żądanie musi być przytrzymane {t_request_hold} s (filtr wejścia) ORAZ sterownik musi stać w tym stanie {t_ready} s (zegar stanu). Drugi warunek liczy się tylko zaraz po cyklu albo po skasowaniu awarii; gdy sterownik już postał, jest dawno spełniony — i tak ma być, wypoczęty silnik nie potrzebuje postoju. Warunek `not running` blokuje start, jeśli silnik z jakiegoś powodu nadal chodzi.',
       'states.GENS_READY.transitions.0.description':
-        'Żądanie przytrzymane {t_request_hold} s i postój w gotowości {t_ready} s minął — rozruch',
+        'Żądanie przytrzymane {t_request_hold} s i postój w gotowości {t_ready} s minął — zapłon',
 
+      'states.GENS_PRESTART.transitions.1.description': 'Wciśnięto przycisk gaszenia — zwarcie trzymane {t_kill} s niezależnie od długości naciśnięcia',
+      'states.GENS_CRANKING.transitions.1.description': 'Wciśnięto przycisk gaszenia — zwarcie trzymane {t_kill} s niezależnie od długości naciśnięcia',
+      'states.GENS_PAUSE.transitions.1.description': 'Wciśnięto przycisk gaszenia — zwarcie trzymane {t_kill} s niezależnie od długości naciśnięcia',
+      'states.GENS_RUNNING.transitions.1.description': 'Wciśnięto przycisk gaszenia — zwarcie trzymane {t_kill} s niezależnie od długości naciśnięcia',
+      'states.GENS_PRESTART.description':
+        'Przekaźnik zapłonu wzbudzony, rozrusznik jeszcze rozwarty. Silnik się nie kręci: ta sekunda istnieje po to, żeby iskra była, zanim nastąpi pierwszy suw sprężania. Wyjście stąd nie wymaga gaszenia — nic nie pracuje, więc zapłon po prostu odpada.',
+      'states.GENS_PRESTART.transitions.0.description': 'Alarm CO przed kręceniem',
+      'states.GENS_PRESTART.transitions.2.description': 'Zanik sygnału z Deye przed załączeniem rozrusznika',
+      'states.GENS_PRESTART.transitions.3.description': 'Potwierdzenie pracy bez kręcenia — silnik już chodził',
+      'states.GENS_PRESTART.transitions.4.description': 'Zapłon czynny {t_prestart} s — załącz rozrusznik',
       'states.GENS_CRANKING.description':
         'Rozrusznik załączony. Limit czasu chroni bendiks.',
       'states.GENS_CRANKING.transitions.0.description': 'Alarm CO podczas rozruchu',
-      'states.GENS_CRANKING.transitions.1.description': 'Zanik sygnału z Deye w trakcie rozruchu',
-      'states.GENS_CRANKING.transitions.2.description': 'Potwierdzenie pracy',
-      'states.GENS_CRANKING.transitions.3.description':
-        'Próba {attempts}/{attempts_max}: brak potwierdzenia pracy w {t_crank} s — wyczerpany limit prób',
+      'states.GENS_CRANKING.transitions.2.description': 'Zanik sygnału z Deye w trakcie rozruchu',
+      'states.GENS_CRANKING.transitions.3.description': 'Potwierdzenie pracy',
       'states.GENS_CRANKING.transitions.4.description':
+        'Próba {attempts}/{attempts_max}: brak potwierdzenia pracy w {t_crank} s — wyczerpany limit prób',
+      'states.GENS_CRANKING.transitions.5.description':
         'Próba {attempts}/{attempts_max}: brak potwierdzenia pracy w {t_crank} s — przerwa {t_pause} s',
 
       'states.GENS_RUNNING.description': 'Silnik pracuje, falownik ładuje bank.',
       'states.GENS_RUNNING.transitions.0.description': 'Alarm CO przy pracującym silniku',
-      'states.GENS_RUNNING.transitions.1.description':
+      'states.GENS_RUNNING.transitions.2.description':
         'Zanik potwierdzenia pracy bez polecenia gaszenia — przyczyna poza sterownikiem',
-      'states.GENS_RUNNING.transitions.2.description': 'Zanik sygnału z Deye',
+      'states.GENS_RUNNING.transitions.3.description': 'Zanik sygnału z Deye',
 
       'states.GENS_FAULT.description':
         'Przekaźnik zapłonu OFF. Wymaga ręcznego skasowania. Kasowanie zablokowane, dopóki utrzymuje się potwierdzenie pracy — oznacza to niesprawny obwód gaszenia.',
@@ -1387,13 +1482,14 @@ const I18N = {
 
       'states.GENS_PAUSE.description': 'Przerwa termiczna rozrusznika przed kolejną próbą.',
       'states.GENS_PAUSE.transitions.0.description': 'Alarm CO między próbami',
-      'states.GENS_PAUSE.transitions.1.description': 'Potwierdzenie pracy przy rozruszniku OFF',
-      'states.GENS_PAUSE.transitions.2.description': 'Zanik sygnału z Deye między próbami — cykl przerwany',
-      'states.GENS_PAUSE.transitions.3.description': 'Przerwa {t_pause} s upłynęła — kolejna próba',
+      'states.GENS_PAUSE.transitions.2.description': 'Potwierdzenie pracy przy rozruszniku OFF',
+      'states.GENS_PAUSE.transitions.3.description': 'Zanik sygnału z Deye między próbami — cykl przerwany',
+      'states.GENS_PAUSE.transitions.4.description': 'Przerwa {t_pause} s upłynęła — kolejna próba',
 
       'states.GENS_STOPPING.description':
         'Przekaźnik zapłonu OFF — styk NC zwiera zapłon do masy.',
-      'states.GENS_STOPPING.transitions.0.description': 'Zanik potwierdzenia pracy',
+      'states.GENS_STOPPING.transitions.0.description':
+        'Zanik potwierdzenia pracy ORAZ zwarcie trzymane {t_kill} s. Oba warunki: zwolnienie w chwili, gdy silnik przestaje się kręcić, czyniłoby gaszenie tak krótkim jak naciśnięcie, które o nie poprosiło — a po to ten przekaźnik istnieje, żeby tego uniknąć.',
       'states.GENS_STOPPING.transitions.1.description':
         'Potwierdzenie pracy utrzymane {t_rundown} s po zwarciu zapłonu — obwód gaszenia niesprawny'
     }
@@ -1992,6 +2088,7 @@ function resetuj(){
   poprzF={};  for(const k in (M.inputs||{})) poprzF[k]=!!weF[k];
   poprzWy={}; const w0=wyjsciaStanu();
   for(const k in (M.outputs||{})) poprzWy[k]=!!w0[k];
+  wszystkiePetleWyl();
   DZIENNIK.length=0; document.getElementById('log').innerHTML='';
   dopisz({typ:'reset',kl:'s'});
   odswiez();
@@ -2100,7 +2197,8 @@ function logujZmianyWe(){
   for(const k in (M.inputs||{})){
     const v=!!we[k];
     if(poprzWe[k]!==v){ poprzWe[k]=v;
-      dopisz({typ:'pin',grupa:'inputs',k:k,v:v,kl:v?'pu':'pd'}); }
+      dopisz({typ:'pin',grupa:'inputs',k:k,v:v,kl:v?'pu':'pd'});
+      dzwiekPinu('inputs', k, v); }
   }
 }
 // zmiana po filtrze to osobne zdarzenie od zmiany na pinie — i osobny wiersz
@@ -2118,7 +2216,8 @@ function logujZmianyWy(){
     const v=!!wy[k];
     if(poprzWy[k]!==v){ poprzWy[k]=v;
       dopisz({typ:'pin',grupa:'outputs',k:k,v:v,kl:v?'pu':'pd'});
-      graj(v?'relayOn':'relayOff', 0.42);     // styk słychać tak jak w szafie
+      graj(v?'relay-on':'relay-off', 0.42);   // styk słychać tak jak w szafie
+      dzwiekPinu('outputs', k, v);
     }
   }
 }
@@ -2173,21 +2272,16 @@ let AUDIO=null, dzwiekWl=false, ostatniTon=0;
 // skryptu. Synteza niżej zostaje jako zapas: gdyby katalog sounds/ nie dojechał
 // albo przeglądarka odmówiła, dźwięk nadal jest, tylko prostszy.
 const DZW={};
-function wczytajDzwieki(){
-  const m={gens:'gens', deye:'deye', fault:'fault', running:'running',
-           cycle:'cycle', relayOn:'relay-on', relayOff:'relay-off'};
-  for(const k in m){
-    const a=new Audio('sounds/'+m[k]+'.mp3');
-    a.preload='auto';
-    const w={el:a, ok:true};
+function graj(nazwa, glosno){
+  if(!dzwiekWl || !nazwa) return false;
+  let w=DZW[nazwa];
+  if(w===undefined){
+    const a=new Audio('sounds/'+nazwa+'.mp3'); a.preload='auto';
+    w={el:a, ok:true};
     a.addEventListener('error', ()=>{ w.ok=false; });
-    DZW[k]=w;
+    DZW[nazwa]=w;
   }
-}
-function graj(k, glosno){
-  if(!dzwiekWl) return false;
-  const w=DZW[k];
-  if(!w || !w.ok) return false;
+  if(!w.ok) return false;
   try{
     const a=w.el.cloneNode();
     a.volume=Math.max(0, Math.min(1, glosno===undefined?0.5:glosno));
@@ -2195,6 +2289,64 @@ function graj(k, glosno){
     if(pr && pr.catch) pr.catch(()=>{ w.ok=false; });
     return true;
   }catch(e){ w.ok=false; return false; }
+}
+function wczytajDzwieki(){
+  ['gens','deye','fault','cycle','relay-on','relay-off',
+   'engine-start','engine-stop'].forEach(k=>graj(k, 0));   // podgrzanie cache
+  wczytajPetle();
+}
+
+// --- PĘTLE MASZYN ---------------------------------------------------
+// Rozrusznik i silnik nie są zdarzeniami, tylko stanami, więc grają pętlą
+// przez cały czas trwania. Pliki są w WAV, bo mp3 dokłada ciszę na krawędziach
+// i w pętli słychać ją jako regularny klik.
+const BUF={}, GRAJACE={}, ELP={};
+function wczytajPetle(){
+  if(!audioGotowe()) return;
+  ['starter','engine'].forEach(k=>{
+    if(BUF[k]!==undefined) return;
+    BUF[k]=null;
+    // fetch nie działa z file:// — wtedy zostaje element <audio> z loop
+    fetch('sounds/'+k+'.wav').then(r=>{ if(!r.ok) throw 0; return r.arrayBuffer(); })
+      .then(ab=>AUDIO.decodeAudioData(ab)).then(b=>{ BUF[k]=b; }).catch(()=>{});
+  });
+}
+function petlaWl(k, glosno){
+  if(!dzwiekWl || !k || GRAJACE[k]) return;
+  if(BUF[k] && AUDIO){
+    const s=AUDIO.createBufferSource(), g=AUDIO.createGain();
+    s.buffer=BUF[k]; s.loop=true;
+    const t0=AUDIO.currentTime;
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(glosno, t0+0.06);
+    s.connect(g); g.connect(AUDIO.destination); s.start();
+    GRAJACE[k]={s:s, g:g};
+  } else {
+    if(!ELP[k]){ ELP[k]=new Audio('sounds/'+k+'.wav'); ELP[k].loop=true; }
+    try{ ELP[k].volume=glosno; ELP[k].currentTime=0;
+         const p=ELP[k].play(); if(p&&p.catch) p.catch(()=>{}); }catch(e){}
+    GRAJACE[k]={el:ELP[k]};
+  }
+}
+function petlaWyl(k){
+  const w=GRAJACE[k]; if(!w) return;
+  delete GRAJACE[k];
+  if(w.s && AUDIO){
+    const t0=AUDIO.currentTime;
+    try{ w.g.gain.cancelScheduledValues(t0);
+         w.g.gain.setValueAtTime(Math.max(w.g.gain.value, 0.0001), t0);
+         w.g.gain.exponentialRampToValueAtTime(0.0001, t0+0.09);
+         w.s.stop(t0+0.13); }catch(e){}
+  } else if(w.el){ try{ w.el.pause(); }catch(e){} }
+}
+function wszystkiePetleWyl(){ Object.keys(GRAJACE).forEach(petlaWyl); }
+// Dźwięk pinu bierze się z DEKLARACJI w YAML-u, nie z nazwy w kodzie.
+function dzwiekPinu(grupa, k, v){
+  if(!dzwiekWl) return;
+  const o=(M[grupa]||{})[k]||{};
+  if(o.sound_loop){ v ? petlaWl(o.sound_loop, grupa==='outputs'?0.55:0.5) : petlaWyl(o.sound_loop); }
+  if(v && o.sound_on)  graj(o.sound_on, 0.55);
+  if(!v && o.sound_off) graj(o.sound_off, 0.5);
 }
 const SKALA=[392,440,494,523,587,659,698];   // bez półtonów, żeby się nie gryzło
 function audioGotowe(){
@@ -2221,7 +2373,7 @@ function ton(f, dlug, typ, glosno){
   o.connect(g); g.connect(AUDIO.destination);
   o.start(t0); o.stop(t0+(dlug||0.18)+0.03);
 }
-function dzwiekPrzejscia(warstwa, indeks, awaria, zaskok){
+function dzwiekPrzejscia(warstwa, indeks, awaria){
   if(!dzwiekWl) return;
   if(awaria){
     if(graj('fault', 0.55)) return;
@@ -2229,12 +2381,10 @@ function dzwiekPrzejscia(warstwa, indeks, awaria, zaskok){
     setTimeout(()=>{ ostatniTon=0; ton(175, 0.34, 'sine', 0.045); }, 170);
     return;
   }
-  if(warstwa==='GENS'){
-    // „zaskok" wyprowadzony z WYJŚĆ, nie z nazwy stanu: rozrusznik zwolniony,
-    // zapłon dalej czynny. Dzięki temu żadna warstwa nie musi znać nazw.
-    if(zaskok && graj('running', 0.5)) return;
-    if(graj('gens', 0.45)) return;
-  } else if(graj('deye', 0.4)) return;
+  // Zaskok nie ma osobnego dzwonka: silnik ma własny głos i sam się odzywa
+  // przez `sound_on` wejścia potwierdzenia pracy.
+  if(warstwa==='GENS'){ if(graj('gens', 0.42)) return; }
+  else if(graj('deye', 0.4)) return;
   const f=SKALA[((indeks%SKALA.length)+SKALA.length)%SKALA.length];
   if(warstwa==='GENS') ton(f, 0.16, 'sine', 0.055);
   else                 ton(f/2, 0.24, 'triangle', 0.038);
@@ -2242,6 +2392,7 @@ function dzwiekPrzejscia(warstwa, indeks, awaria, zaskok){
 function ustawDzwiek(v){
   dzwiekWl=v;
   if(v){ audioGotowe(); if(!Object.keys(DZW).length) wczytajDzwieki(); }
+  else wszystkiePetleWyl();
   const b=document.getElementById('bDzwiek');
   if(b){ b.classList.toggle('gra', v); b.textContent = v ? '♪' : '♪';
          b.title=T(v?'sound.on':'sound.off'); }
@@ -2414,19 +2565,14 @@ function tik(dt){
       // migawka PO zastosowaniu akcji — opis „Próba {attempts}/{attempts_max}"
       // ma pokazywać licznik już zinkrementowany
       dopisz({typ:'przejscie',z:poprz,cel:stan,i:i,snap:migawka(),kl:kl});
-      // Zaskok: rozrusznik zwolniony, zapłon dalej czynny ORAZ potwierdzenie
-      // pracy na wejściu. Bez tego ostatniego warunku nieudana próba
-      // (CRANKING -> PAUSE) wygląda identycznie i grała dźwięk sukcesu.
-      const wyP=(M.states[poprz]||{}).outputs||{}, wyN=(M.states[stan]||{}).outputs||{};
-      dzwiekPrzejscia('GENS', Object.keys(M.states).indexOf(stan), jestAwaria(stan),
-                      !!(wyP.starter && !wyN.starter && wyN.ignition && we.running));
+      dzwiekPrzejscia('GENS', Object.keys(M.states).indexOf(stan), jestAwaria(stan));
       zastosujAkcje((M.states[stan]||{}).actions);
       if (poprz===stanIdle && stan!==stanIdle) { cyklStart=t; }
       if (poprz!==stanIdle && stan===stanIdle) {
         cyklOstatni = (cyklStart!==null) ? t-cyklStart : null;
         cyklStart=null; cykle++;
         if (cyklOstatni!==null){ dopisz({typ:'cykl',s:cyklOstatni.toFixed(1),kl:'s'});
-          graj('cycle', 0.35); }
+          graj('cycle', 0.32); }
       }
       if (modelSilnika && !!wyjsciaStanu().starter){
         if (Math.random() < PROG_NIEUDANEJ){

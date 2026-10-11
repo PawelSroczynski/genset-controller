@@ -46,6 +46,95 @@ def trzask(ms, tau_ms, lo, hi, amp=1.0, ziarno=0):
     t = czas(ms)
     return amp*x*np.exp(-t/(tau_ms/1000.0))
 
+def pasmo(x, lo, hi):
+    """Filtr pasmowy przez widmo, z wygładzoną krawędzią — ostra maska dzwoni."""
+    n=len(x)
+    W=np.fft.rfft(x); f=np.fft.rfftfreq(n, 1.0/SR)
+    m=((f>=lo)&(f<=hi)).astype(float)
+    k=max(1,int(len(m)*0.02)); m=np.convolve(m, np.ones(k)/k, mode='same')
+    return np.fft.irfft(W*m, n)
+
+def rozrusznik(ms=1200):
+    """Rozrusznik kręcący zimnym jednocylindrowcem.
+
+    Trzy składniki, wszystkie z realnych wielkości: buczenie komutatora silnika
+    prądu stałego, świst zazębienia bendiksu, i — najważniejsze — MODULACJA
+    SPRĘŻANIEM. Przy ~300 obr/min jednocylindrowiec czterosuwowy sprzęga raz na
+    dwa obroty, czyli 2,5 Hz. To od tego rozrusznik brzmi jak rozrusznik,
+    a nie jak wiertarka: obroty falują, bo silnik raz po raz wchodzi na sprężanie.
+    Długość pętli to całkowita liczba cykli sprężania, inaczej słychać szew.
+    """
+    t=czas(ms); rng=np.random.default_rng(11)
+    f_kompr=2.5                       # sprężanie, Hz
+    obc=0.55+0.45*np.cos(2*np.pi*f_kompr*t)      # chwilowe obciążenie
+    obr=1.0-0.18*(obc-0.55)/0.45                 # pod obciążeniem obroty siadają
+    faza=2*np.pi*np.cumsum(70.0*obr)/SR          # 70 Hz buczenia komutatora
+    s=np.zeros_like(t)
+    for h in range(1,9):
+        s += (1.0/h)*np.sin(faza*h)
+    s*=0.45
+    s += 0.22*np.sin(2*np.pi*np.cumsum(1380.0*obr)/SR)*(0.6+0.4*np.cos(2*np.pi*f_kompr*t))
+    s += 0.30*pasmo(rng.standard_normal(len(t)), 300, 5200)
+    return s*obc
+
+def silnik(ms=2000, f_fire=25.0):
+    """GX390 pod obciążeniem: 3000 obr/min, czterosuw, więc zapłon co dwa
+    obroty = 25 Hz. Każdy zapłon to impuls wydechu — szum przez pasmo plus
+    niski ton — a nie nuta. Lekka zmienność cyklu, żeby nie brzmiało jak brzęczyk.
+    Pętla owija się modulo, więc ogon ostatniego impulsu wraca na początek
+    i szwu nie słychać."""
+    n=int(SR*ms/1000.0); out=np.zeros(n)
+    rng=np.random.default_rng(23)
+    okres=SR/f_fire
+    for i in range(int(round(ms/1000.0*f_fire))):
+        i0=int(round(i*okres)); dl=int(okres*1.6)
+        seg=np.arange(dl)/SR
+        kop=np.exp(-seg/0.013)
+        puls = pasmo(rng.standard_normal(dl), 55, 950)*kop*1.0
+        puls += np.sin(2*np.pi*92*seg)*kop*0.75
+        puls += np.sin(2*np.pi*184*seg)*np.exp(-seg/0.008)*0.30
+        g=0.92+0.10*rng.standard_normal()
+        idx=(np.arange(dl)+i0) % n                # owijanie, dla czystej pętli
+        np.add.at(out, idx, puls*g)
+    t=czas(ms)
+    out += 0.16*pasmo(rng.standard_normal(n), 450, 6500)    # wentylator, mechanika
+    out += 0.06*np.sin(2*np.pi*600*t)                        # świst prądnicy
+    return out*0.85
+
+def rozruch_zaskok(ms=1500):
+    """Kręcenie, zapłon, i narost obrotów do biegu jałowego."""
+    n=int(SR*ms/1000.0); out=np.zeros(n)
+    kr=rozrusznik(700); out[:len(kr)] += kr*0.9
+    # zapłony od 9 Hz do 25 Hz w 0,8 s — tak silnik wchodzi na obroty
+    rng=np.random.default_rng(31); t0=0.62; f=9.0
+    while t0 < ms/1000.0-0.05:
+        i0=int(t0*SR); dl=int(0.06*SR); seg=np.arange(dl)/SR
+        kop=np.exp(-seg/0.014)
+        p = pasmo(rng.standard_normal(dl), 55, 950)*kop + np.sin(2*np.pi*92*seg)*kop*0.8
+        dost=min(dl, n-i0)
+        if dost>0: out[i0:i0+dost] += p[:dost]*0.95
+        t0 += 1.0/f
+        f = min(25.0, f*1.17)
+    return out
+
+def silnik_stop(ms=1600):
+    """Zapłony rzedną, obroty siadają, na końcu klaknięcie zaworów."""
+    n=int(SR*ms/1000.0); out=np.zeros(n)
+    rng=np.random.default_rng(37); t0=0.0; f=25.0
+    while t0 < ms/1000.0-0.25 and f > 3.0:
+        i0=int(t0*SR); dl=int(0.07*SR); seg=np.arange(dl)/SR
+        kop=np.exp(-seg/0.016)
+        p = pasmo(rng.standard_normal(dl), 50, 800)*kop + np.sin(2*np.pi*86*seg)*kop*0.8
+        dost=min(dl, n-i0)
+        if dost>0: out[i0:i0+dost] += p[:dost]*(0.9*f/25.0+0.25)
+        t0 += 1.0/f
+        f *= 0.86
+    i0=int((ms/1000.0-0.18)*SR)
+    kl=trzask(90, 3.0, 900, 4200, 0.55, 41)
+    dost=min(len(kl), n-i0)
+    if dost>0: out[i0:i0+dost] += kl[:dost]
+    return out
+
 def polacz(*kawalki):
     """Nakłada kawałki (przesunięcie_ms, sygnał) na wspólną oś."""
     dl = max(int(SR*p/1000.0)+len(s) for p, s in kawalki)
@@ -63,12 +152,16 @@ def poglos(x, ms=140, mix=0.11, ziarno=7):
     moc = np.sqrt(np.sum(ir**2))
     return x + mix*np.convolve(x, ir/moc, mode='full')[:len(x)]
 
-def zapisz(nazwa, x, szczyt_db=-14.0, wyc_ms=12):
-    x = poglos(x)
+def zapisz(nazwa, x, szczyt_db=-14.0, wyc_ms=12, petla=False):
+    # Pętla nie może dostać ani pogłosu, ani wygaszenia na końcu: jedno i drugie
+    # robi dziurę w miejscu zapętlenia, którą słychać jako regularny klik.
+    if not petla:
+        x = poglos(x)
     # wygaszenie na końcu — ucięcie sygnału w locie słychać jako trzask
-    k = int(SR*wyc_ms/1000.0)
-    if len(x) > k:
-        x[-k:] *= np.linspace(1, 0, k)
+    if not petla:
+        k = int(SR*wyc_ms/1000.0)
+        if len(x) > k:
+            x[-k:] *= np.linspace(1, 0, k)
     x = x/ (np.max(np.abs(x)) or 1.0) * (10**(szczyt_db/20.0))
     x = x - np.mean(x)                      # zdejmij składową stałą
     sur = os.path.join(KAT, nazwa+'.raw')
@@ -100,11 +193,6 @@ ZESTAW['gens'] = dzwon(660, 420, 170, [(1,1.0,1.0),(2,0.34,0.55),(3,0.12,0.35)],
 # Przejście stanu falownika: oktawę niżej, lekko nieharmoniczny partial —
 # brzmi drewniano i nie myli się z agregatem.
 ZESTAW['deye'] = dzwon(330, 620, 250, [(1,1.0,1.0),(2,0.26,0.6),(2.76,0.10,0.4)], 0.8)
-# Potwierdzenie pracy: kwinta czysta w górę.
-ZESTAW['running'] = polacz(
-    (0,  dzwon(523, 420, 180, [(1,1.0,1.0),(2,0.3,0.5)], 0.75)),
-    (95, dzwon(784, 600, 240, [(1,1.0,1.0),(2,0.25,0.5),(3,0.08,0.3)], 0.85)),
-)
 # Awaria: dwa tony w dół, każdy z parą rozstrojoną o 1,5 Hz — powolne dudnienie
 # brzmi poważnie bez podnoszenia głośności.
 ZESTAW['fault'] = polacz(
@@ -114,8 +202,41 @@ ZESTAW['fault'] = polacz(
 # Zamknięcie cyklu: jedna miękka nuta z długim ogonem.
 ZESTAW['cycle'] = dzwon(440, 700, 320, [(1,1.0,1.0),(2,0.18,0.5)], 0.6)
 
+def zapisz_petle(nazwa, x, szczyt_db=-17.0, sr_out=22050):
+    """Pętle idą jako WAV, nie mp3.
+
+    Każdy koder mp3 dokłada ciszę na początku i końcu — tak działa format.
+    Przy jednorazowym dźwięku to niewidoczne, przy pętli słychać regularny klik
+    w miejscu zapętlenia, co przy silniku psuje całość. WAV jest próbka w próbkę,
+    więc szew jest gwarantowany, a nie zależny od tego, jak dana przeglądarka
+    odczyta znaczniki gapless. 22,05 kHz wystarcza: treść siedzi poniżej 7 kHz,
+    a plik jest o połowę mniejszy.
+    """
+    x = x - np.mean(x)
+    x = x/(np.max(np.abs(x)) or 1.0)*(10**(szczyt_db/20.0))
+    # przepróbkowanie liniowe; długość pozostaje całkowitą liczbą cykli
+    n_out = int(round(len(x)*sr_out/float(SR)))
+    xi = np.interp(np.linspace(0, len(x), n_out, endpoint=False), np.arange(len(x)), x)
+    plik = os.path.join(KAT, nazwa+'.wav')
+    import wave
+    with wave.open(plik,'wb') as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(sr_out)
+        w.writeframes((xi*32767).astype('<i2').tobytes())
+    return plik, n_out/float(sr_out)
+
+# Maszyny mają własny głos i grają PĘTLĄ, dopóki trwa stan.
+PETLE = {
+    'starter': rozrusznik(1200),      # 3 pełne cykle sprężania
+    'engine':  silnik(2000, 25.0),    # 50 zapłonów, równo
+}
+ZESTAW['engine-start'] = rozruch_zaskok(1500)
+ZESTAW['engine-stop']  = silnik_stop(1600)
+
 if __name__ == '__main__':
     os.makedirs(KAT, exist_ok=True)
     for nazwa, sygnal in ZESTAW.items():
         plik, dl = zapisz(nazwa, sygnal)
-        print('  %-11s %5.0f ms  %6d B' % (nazwa, dl*1000, os.path.getsize(plik)))
+        print('  %-13s %5.0f ms  %6d B' % (nazwa, dl*1000, os.path.getsize(plik)))
+    for nazwa, sygnal in PETLE.items():
+        plik, dl = zapisz_petle(nazwa, sygnal)
+        print('  %-13s %5.0f ms  %6d B  PETLA' % (nazwa, dl*1000, os.path.getsize(plik)))

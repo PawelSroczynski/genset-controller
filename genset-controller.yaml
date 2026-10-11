@@ -19,9 +19,18 @@ substitutions:
   # Minimum dwell in GENS_READY after a closed cycle or a fault reset. This one
   # is correctly a state timer.
   t_ready: "5"
+  # Ignition live BEFORE the starter turns the engine. With both relays closing
+  # together the first compression strokes can happen while the interposing
+  # relay is still settling — the engine turned without spark, battery spent,
+  # and one attempt gone off a budget of three.
+  t_prestart: "1"
   t_crank: "3"             # maximum duration of a single cranking attempt
   t_pause: "10"            # starter rest between attempts
   t_rundown: "10"          # time allowed for the engine to come to a stop
+  # How long the ignition stays shorted to ground when stopping. A button will
+  # not do: a single-cylinder engine can ride through a brief short, so the
+  # duration must not depend on how long anybody holds anything.
+  t_kill: "3"
   attempts_max: "3"
 
 esphome:
@@ -44,8 +53,8 @@ api:
 
 # Fault notifications travel over the network, not on a relay contact.
 # Uncomment and set the broker — publishes on every state change:
-#   genset/state     GENS_READY | GENS_CRANKING | GENS_PAUSE | GENS_RUNNING
-#                  | GENS_STOPPING | GENS_FAULT
+#   genset/state     GENS_READY | GENS_PRESTART | GENS_CRANKING | GENS_PAUSE
+#                  | GENS_RUNNING | GENS_STOPPING | GENS_FAULT
 #   genset/fault     ON | OFF
 #   genset/attempts  0..3
 # From here an MQTT bridge reaches the Telegram bot.
@@ -174,6 +183,12 @@ binary_sensor:
     filters: [ delayed_on: 50ms ]
 
   - platform: gpio
+    name: "Kill button"
+    id: in_kill_btn
+    pin: { mcp23xxx: mcp_hub, number: 3, mode: { input: true, pullup: false }, inverted: true }
+    filters: [ delayed_on: 50ms ]
+
+  - platform: gpio
     name: "Fault reset"
     id: in_reset
     pin: { mcp23xxx: mcp_hub, number: 4, mode: { input: true, pullup: false }, inverted: true }
@@ -184,7 +199,7 @@ binary_sensor:
     name: "Genset fault"
     id: fault
     device_class: problem
-    lambda: 'return id(state) == 5;'
+    lambda: 'return id(state) == 6;'
 
 # =====================================================================
 #  OUTPUTS
@@ -221,6 +236,19 @@ switch:
     pin: { mcp23xxx: mcp_hub, number: 9 }
     restore_mode: ALWAYS_OFF
 
+  # RELAY-03 — KILL RELAY, energise-to-stop, the opposite polarity to RELAY-01.
+  # Energised, its contact shorts the ignition to ground. It is NOT the inverse
+  # of the ignition relay: it is energised only while stopping and in a fault.
+  # When idle the NC contact of the de-energised RELAY-01 already holds the
+  # short, so a second coil energised for hours would wear for nothing.
+  # Two independent paths on purpose: one fails safe on loss of power, the
+  # other acts positively on command.
+  - platform: gpio
+    name: "Kill relay"
+    id: relay_03
+    pin: { mcp23xxx: mcp_hub, number: 10 }
+    restore_mode: ALWAYS_OFF
+
 # =====================================================================
 #  STATE MACHINE
 # =====================================================================
@@ -230,17 +258,20 @@ script:
     then:
       - lambda: |-
           const int s = id(state);
-          const bool ign = (s>=1 && s<=3);        // GENS_CRANKING, PAUSE, RUNNING
-          const bool crk = (s==1);                // GENS_CRANKING only
+          const bool ign = (s>=1 && s<=4);        // PRESTART, CRANKING, PAUSE, RUNNING
+          const bool crk = (s==2);                // CRANKING only
+          const bool kil = (s==5 || s==6);        // STOPPING, FAULT
           if (id(relay_01).state != ign) { ign ? id(relay_01).turn_on() : id(relay_01).turn_off(); }
           if (id(relay_02).state != crk) { crk ? id(relay_02).turn_on() : id(relay_02).turn_off(); }
+          if (id(relay_03).state != kil) { kil ? id(relay_03).turn_on() : id(relay_03).turn_off(); }
 
 interval:
   - interval: 100ms
     then:
       - lambda: |-
-          static const char* NAMES[6] =
-            {"GENS_READY","GENS_CRANKING","GENS_PAUSE","GENS_RUNNING","GENS_STOPPING","GENS_FAULT"};
+          static const char* NAMES[7] =
+            {"GENS_READY","GENS_PRESTART","GENS_CRANKING","GENS_PAUSE","GENS_RUNNING",
+             "GENS_STOPPING","GENS_FAULT"};
           const float DT = 0.1f;
           id(in_state) += DT;
 
@@ -248,6 +279,7 @@ interval:
           const bool run = id(in_running).state;
           const bool co  = id(in_co_alarm).state;
           const bool rst = id(in_reset).state;
+          const bool kil = id(in_kill_btn).state;
 
           int s = id(state);
           int next = s;
@@ -260,31 +292,43 @@ interval:
               // fault reset. !run blocks the start if the engine is still turning.
               if (req && !co && !run && id(in_state) >= ${t_ready}) next = 1;
               break;
-            case 1: // GENS_CRANKING
-              if (co) next = 5;
-              else if (!req) next = 4;            // Deye signal lost — starter OFF
-              else if (run) next = 3;             // run confirmed — starter OFF
+            case 1: // GENS_PRESTART — ignition live, starter still open
+              if (co) next = 6;
+              else if (kil) next = 5;
+              else if (!req) next = 0;            // nothing runs yet: ignition just drops
+              else if (run) next = 4;
+              else if (id(in_state) >= ${t_prestart}) next = 2;
+              break;
+            case 2: // GENS_CRANKING
+              if (co) next = 6;
+              else if (kil) next = 5;
+              else if (!req) next = 5;            // Deye signal lost — starter OFF
+              else if (run) next = 4;             // run confirmed — starter OFF
               else if (id(in_state) >= ${t_crank}) {
                 id(attempts) += 1;
-                next = (id(attempts) >= ${attempts_max}) ? 5 : 2;
+                next = (id(attempts) >= ${attempts_max}) ? 6 : 3;
               }
               break;
-            case 2: // GENS_PAUSE
-              if (co) next = 5;
-              else if (run) next = 3;             // run confirmed with the starter OFF
+            case 3: // GENS_PAUSE — ignition stays live, so no second prestart
+              if (co) next = 6;
+              else if (kil) next = 5;
+              else if (run) next = 4;             // run confirmed with the starter OFF
               else if (!req) next = 0;
-              else if (id(in_state) >= ${t_pause}) next = 1;
+              else if (id(in_state) >= ${t_pause}) next = 2;
               break;
-            case 3: // GENS_RUNNING
-              if (co) next = 5;
-              else if (!run) next = 5;            // run confirmation lost
-              else if (!req) next = 4;            // ignition OFF
+            case 4: // GENS_RUNNING
+              if (co) next = 6;
+              else if (kil) next = 5;
+              else if (!run) next = 6;            // run confirmation lost
+              else if (!req) next = 5;            // ignition OFF
               break;
-            case 4: // GENS_STOPPING
-              if (!run) next = 0;
-              else if (id(in_state) >= ${t_rundown}) next = 5;
+            case 5: // GENS_STOPPING
+              // BOTH conditions. Releasing the moment the engine stops turning
+              // would make the kill as short as the press that asked for it.
+              if (!run && id(in_state) >= ${t_kill}) next = 0;
+              else if (id(in_state) >= ${t_rundown}) next = 6;
               break;
-            case 5: // GENS_FAULT
+            case 6: // GENS_FAULT
               // !run blocks the reset while the engine is still turning
               if (rst && !co && !run) next = 0;
               break;

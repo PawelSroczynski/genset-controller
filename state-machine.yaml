@@ -39,10 +39,20 @@ parameters:
   # controller never cranks again the instant the engine has stopped.
   # This one is correctly measured as time in the state.
   t_ready: 5             # s
+  # Ignition must be live BEFORE the starter turns the engine over. With both
+  # relays closing together the first compression strokes can happen while the
+  # interposing relay is still settling, so the engine is turned without spark —
+  # battery spent for nothing, and an attempt wasted off a budget of three.
+  t_prestart: 1          # s — ignition on, starter still off
   t_crank: 3             # s — maximum duration of a single cranking attempt
   t_pause: 10            # s — starter rest between attempts
   attempts_max: 3
   t_rundown: 10          # s — time allowed for the engine to come to a stop
+  # How long the ignition is held shorted to ground when stopping. A button is
+  # not enough: a single-cylinder engine can ride through a brief short and keep
+  # running, so the duration cannot depend on how long somebody holds a button.
+  # The relay holds it, and the state machine holds the relay.
+  t_kill: 3              # s
 
 counters:
   attempts: 0
@@ -140,6 +150,9 @@ inputs:
   running:
     pin: IN-02
     label: Run confirmed
+    sound_loop: engine          # pracujący silnik, dopóki potwierdzenie trwa
+    sound_on: engine-start      # kręcenie, zapłon, narost obrotów
+    sound_off: engine-stop      # obroty siadają, na końcu klaknięcie zaworów
     description: >-
       External DIN-rail voltage monitoring relay wired to the genset output
       phase. Its dry contact feeds IN-02.
@@ -155,6 +168,17 @@ inputs:
       ON = carbon monoxide detected. The detector needs a second contact for
       the hardwired permit chain, which stops the engine independently of
       the controller.
+  kill_btn:
+    pin: IN-05
+    label: Kill button
+    description: >-
+      Momentary pushbutton in the cabinet door. It is a REQUEST, not the kill
+      itself: pressing it sends the machine to GENS_STOPPING, which energises
+      the kill relay and holds the short for {t_kill} s regardless of how long
+      the button was held. Wiring the button straight into the ignition line
+      means a short press leaves the engine running.
+    momentary: true
+
   reset:
     pin: IN-04
     label: Fault reset
@@ -178,9 +202,28 @@ outputs:
     pin: RELAY-02
     label: Starter relay
     short: STARTER
+    # Dźwięk deklarowany w danych, nie wpisany w kod symulatora: `sound_loop`
+    # gra, dopóki sygnał jest aktywny. Dzięki temu dmuchawa gazogeneratora
+    # dostanie swój głos przez dopisanie jednej linii i pliku.
+    sound_loop: starter
     description: >-
       Drives the starter contactor coil; it does not feed the starter directly.
       ON = contactor closed, starter cranking. OFF = contactor open.
+
+  kill:
+    pin: RELAY-03
+    label: Kill relay
+    short: KILL
+    description: >-
+      ENERGISE-TO-STOP, and deliberately the opposite polarity to the ignition
+      relay. Energised, its contact shorts the ignition to ground: a positive,
+      timed kill. It is NOT the inverse of the ignition relay — it is energised
+      only while the engine is being stopped and in a fault, not while idle.
+      When idle the NC contact of the de-energised ignition relay already holds
+      the short, and keeping a second coil energised for hours would waste power
+      and wear it for nothing.
+      The two paths are independent on purpose: one fails safe on loss of power,
+      the other acts positively on command.
 
 states:
   GENS_READY:
@@ -195,23 +238,50 @@ states:
       the controller has stood idle it is long satisfied, and that is correct —
       a rested engine needs no dwell. The `not running` term blocks the start
       if the engine is somehow still turning.
-    outputs: { ignition: false, starter: false }
+    outputs: { ignition: false, starter: false, kill: false }
     actions: { attempts: 0 }
     transitions:
-      - to: GENS_CRANKING
+      - to: GENS_PRESTART
         when: gen_request and not co_alarm and not running
         after: t_ready
-        description: Request held {t_request_hold} s and ready dwell {t_ready} s elapsed — crank
-
-  GENS_CRANKING:
+        description: Request held {t_request_hold} s and ready dwell {t_ready} s elapsed — ignition on
+  GENS_PRESTART:
     x: 300
     y: 40
+    description: >-
+      Ignition relay energised, starter still open. The engine is not turning
+      yet: this second exists so that spark is live before the first
+      compression stroke. Leaving here needs no stopping sequence — nothing is
+      running, so the ignition simply drops.
+    outputs: { ignition: true, starter: false, kill: false }
+    transitions:
+      - to: GENS_FAULT
+        when: co_alarm
+        description: CO alarm before cranking
+      - to: GENS_STOPPING
+        when: kill_btn
+        description: Kill button pressed — short held {t_kill} s regardless of the press
+      - to: GENS_READY
+        when: not gen_request
+        description: Deye signal lost before the starter engaged
+      - to: GENS_RUNNING
+        when: running
+        description: Run confirmed without cranking — engine was already turning
+      - to: GENS_CRANKING
+        after: t_prestart
+        description: Ignition live {t_prestart} s — engage the starter
+  GENS_CRANKING:
+    x: 530
+    y: 40
     description: Starter engaged. The time limit protects the bendix.
-    outputs: { ignition: true, starter: true }
+    outputs: { ignition: true, starter: true, kill: false }
     transitions:
       - to: GENS_FAULT
         when: co_alarm
         description: CO alarm during cranking
+      - to: GENS_STOPPING
+        when: kill_btn
+        description: Kill button pressed — short held {t_kill} s regardless of the press
       - to: GENS_STOPPING
         when: not gen_request
         description: Deye signal lost while cranking
@@ -227,45 +297,18 @@ states:
         after: t_crank
         actions: { attempts: "+1" }
         description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_crank} s — {t_pause} s pause"
-
-  GENS_RUNNING:
-    x: 530
-    y: 40
-    description: Engine running, inverter charging the bank.
-    outputs: { ignition: true, starter: false }
-    transitions:
-      - to: GENS_FAULT
-        when: co_alarm
-        description: CO alarm with the engine running
-      - to: GENS_FAULT
-        when: not running
-        description: Run confirmation lost without a stop command — cause outside the controller
-      - to: GENS_STOPPING
-        when: not gen_request
-        description: Deye signal lost
-
-  GENS_FAULT:
-    x: 70
-    y: 170
-    fault: true
-    description: >-
-      Ignition relay OFF. Requires a manual reset. Resetting is blocked while
-      run confirmation persists — that would mean a defective kill circuit.
-    outputs: { ignition: false, starter: false }
-    transitions:
-      - to: GENS_READY
-        when: reset and not co_alarm and not running
-        description: Fault reset
-
   GENS_PAUSE:
-    x: 300
+    x: 530
     y: 170
     description: Starter thermal rest before the next attempt.
-    outputs: { ignition: true, starter: false }
+    outputs: { ignition: true, starter: false, kill: false }
     transitions:
       - to: GENS_FAULT
         when: co_alarm
         description: CO alarm between attempts
+      - to: GENS_STOPPING
+        when: kill_btn
+        description: Kill button pressed — short held {t_kill} s regardless of the press
       - to: GENS_RUNNING
         when: running
         description: Run confirmed with the starter OFF
@@ -275,16 +318,50 @@ states:
       - to: GENS_CRANKING
         after: t_pause
         description: "{t_pause} s pause elapsed — next attempt"
-
+  GENS_RUNNING:
+    x: 760
+    y: 40
+    description: Engine running, inverter charging the bank.
+    outputs: { ignition: true, starter: false, kill: false }
+    transitions:
+      - to: GENS_FAULT
+        when: co_alarm
+        description: CO alarm with the engine running
+      - to: GENS_STOPPING
+        when: kill_btn
+        description: Kill button pressed — short held {t_kill} s regardless of the press
+      - to: GENS_FAULT
+        when: not running
+        description: Run confirmation lost without a stop command — cause outside the controller
+      - to: GENS_STOPPING
+        when: not gen_request
+        description: Deye signal lost
   GENS_STOPPING:
-    x: 530
+    x: 760
     y: 170
     description: Ignition relay OFF — the NC contact shorts the ignition to ground.
-    outputs: { ignition: false, starter: false }
+    outputs: { ignition: false, starter: false, kill: true }
     transitions:
       - to: GENS_READY
         when: not running
-        description: Run confirmation lost
+        after: t_kill
+        description: >-
+          Run confirmation lost AND the short held {t_kill} s. Both conditions:
+          releasing the moment the engine stops turning would make the kill as
+          short as the press that asked for it, which is the problem this relay
+          exists to remove.
       - to: GENS_FAULT
         after: t_rundown
         description: "Run confirmation held {t_rundown} s after the ignition was shorted — kill circuit defective"
+  GENS_FAULT:
+    x: 70
+    y: 170
+    fault: true
+    description: >-
+      Ignition relay OFF. Requires a manual reset. Resetting is blocked while
+      run confirmation persists — that would mean a defective kill circuit.
+    outputs: { ignition: false, starter: false, kill: true }
+    transitions:
+      - to: GENS_READY
+        when: reset and not co_alarm and not running
+        description: Fault reset

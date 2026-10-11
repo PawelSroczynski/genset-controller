@@ -82,7 +82,7 @@ deye:
 # =====================================================================
 clock:
   warp: 240                # 1 s of simulation = 4 min of plant, while idle
-  realtime_states: [GENS_CRANKING, GENS_PAUSE, GENS_STOPPING, GENS_FAULT]
+  realtime_states: [GENS_PRESTART, GENS_CRANKING, GENS_PAUSE, GENS_STOPPING, GENS_FAULT]
   realtime_on_request: true   # also drop to 1x as soon as the request appears,
                               # so the request hold and the ready dwell are
                               # watchable. IN GENS_READY ONLY: the request stays
