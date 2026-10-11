@@ -1193,8 +1193,10 @@ const I18N = {
       'plant.deyeNote':   'Drives IN-01 from SOC with hysteresis: closes at Start, releases at Stop. Click IN-01 to take over by hand.',
       'plant.deyeOn':     '[plant] Deye model ON',
       'plant.deyeOff':    '[plant] Deye model OFF — IN-01 by hand',
-      'plant.bankClick':  'Click to drain the bank to one point above the Start threshold. A shortcut past the dozen hours of discharging, so the request itself can be watched.',
+      'plant.bankClick':  'Click to drain the bank to one point above the Start threshold. A shortcut past the dozen hours of discharging, so the request closing can be watched.',
       'plant.bankLog':    '[plant] bank set just above the Start threshold:',
+      'plant.bankClickStop': 'Charging. Click to fill the bank to one point below the Stop threshold, so the contact releasing can be watched without waiting out the charge.',
+      'plant.bankLogStop':   '[plant] bank set just below the Stop threshold:',
       'plant.warp':       'plant',
       'plant.realtime':   'real time',
 
@@ -1277,8 +1279,10 @@ const I18N = {
       'plant.deyeNote':   'Prowadzi IN-01 z SOC, z histerezą: zwiera na progu Start, zwalnia na Stop. Kliknij IN-01, żeby przejąć ręcznie.',
       'plant.deyeOn':     '[instalacja] model Deye ON',
       'plant.deyeOff':    '[instalacja] model Deye OFF — IN-01 ręcznie',
-      'plant.bankClick':  'Kliknij, żeby rozładować bank do progu Start +1 %. Skrót przez kilkanaście godzin rozładowania, żeby dało się obejrzeć samo wyzwolenie żądania.',
+      'plant.bankClick':  'Kliknij, żeby rozładować bank do progu Start +1 %. Skrót przez kilkanaście godzin rozładowania, żeby dało się obejrzeć samo zwarcie styku.',
       'plant.bankLog':    '[instalacja] bank ustawiony tuż nad progiem Start:',
+      'plant.bankClickStop': 'Trwa ładowanie. Kliknij, żeby naładować bank do progu Stop −1 %, i obejrzeć rozwarcie styku bez czekania na całe ładowanie.',
+      'plant.bankLogStop':   '[instalacja] bank ustawiony tuż pod progiem Stop:',
       'plant.warp':       'instalacja',
       'plant.realtime':   'czas rzeczywisty',
 
@@ -2681,18 +2685,21 @@ function odswiezSynoptyke(){
       (i?'<span class="syn-strz">→</span>':'')+
       '<div class="syn" data-b="'+b.id+'"><div class="syn-et"></div><div class="syn-w"></div></div>'
     ).join('');
-    // Skrót na kafelku banku: zjechanie z 62 % do progu to kilkanaście godzin
-    // instalacji. Jedno kliknięcie stawia SOC tuż nad progiem, żeby dało się
-    // obejrzeć samo wyzwolenie żądania bez czekania na całe rozładowanie.
+    // Skrót na kafelku banku. Oba progi dzieli kilkanaście godzin instalacji,
+    // więc kliknięcie stawia SOC tuż PRZED najbliższym zdarzeniem — zależnie
+    // od fazy. Samo przekroczenie progu zachodzi dalej samo, żeby widać było
+    // sekwencję, a nie jej wynik.
+    //   ładowanie  → tuż pod progiem Stop,  czyli za chwilę styk się rozewrze
+    //   pozostałe  → tuż nad progiem Start, czyli za chwilę styk się zewrze
     const kb=c.querySelector('.syn[data-b="bank"]');
     if(kb && PL){
       kb.style.cursor='pointer';
-      kb.title=T('plant.bankClick');
       kb.onclick=()=>{
-        INST.soc = PL.deye.gen_start_soc + 1;
+        const d=PL.deye, lad=(INST.stanDeye==='DEYE_CHARGING');
+        INST.soc = lad ? (d.gen_stop_soc - 1) : (d.gen_start_soc + 1);
         POM.soc = INST.soc;
         dopisz({typ:'txt', kl:'m',
-          txt: T('plant.bankLog')+' '+INST.soc.toFixed(0)+' %'});
+          txt:(lad?T('plant.bankLogStop'):T('plant.bankLog'))+' '+INST.soc.toFixed(0)+' %'});
         odswiez();
       };
     }
@@ -2723,6 +2730,12 @@ function odswiezSynoptyke(){
     alarm: {ram:'#e05c4b', tlo:'#2a1614', op:'1'},
     off:   {ram:'#26333f', tlo:'#1a2430', op:'.45'}
   };
+  const kbx=c.querySelector('.syn[data-b="bank"]');
+  if(kbx && PL){
+    const dymek = (INST.stanDeye==='DEYE_CHARGING')
+      ? T('plant.bankClickStop') : T('plant.bankClick');
+    if(kbx.title!==dymek) kbx.title=dymek;
+  }
   c.querySelectorAll('.syn').forEach(el=>{
     const id=el.dataset.b, d=dane[id]||{w:'--',kl:'off'};
     el.querySelector('.syn-et').textContent=T('syn.'+id);
