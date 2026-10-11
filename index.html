@@ -1179,6 +1179,8 @@ const I18N = {
       'word.phase':       'same vessel, phase handover',
       'syn.pv':           'PV',
       'syn.request':      'GS contact',
+      'sound.on':         'Sound on — a short tone on every state transition. Click to mute.',
+      'sound.off':        'Sound off. Click for a short tone on every state transition.',
       'log.copyHint':     'Click to copy the whole log',
       'log.copied':       'COPIED, lines:',
       'log.gsClosed':     'GS contact closed — genset requested',
@@ -1267,6 +1269,8 @@ const I18N = {
       'word.phase':       'to samo urządzenie, zmiana fazy',
       'syn.pv':           'PV',
       'syn.request':      'styk GS',
+      'sound.on':         'Dźwięk włączony — krótki ton przy każdym przejściu stanu. Kliknij, żeby wyciszyć.',
+      'sound.off':        'Dźwięk wyłączony. Kliknij, żeby słyszeć krótki ton przy każdym przejściu stanu.',
       'log.copyHint':     'Kliknij, żeby skopiować cały dziennik',
       'log.copied':       'SKOPIOWANO, wierszy:',
       'log.gsClosed':     'styk GS zwarty — żądanie pracy agregatu',
@@ -1664,6 +1668,8 @@ footer .cykl{padding:3px 9px;border-radius:7px;gap:5px}
 footer .cykl-czas{font-size:14px}
 footer .cykl-opis{font-size:10.5px}
 footer button{padding:5px 10px;font-size:11.5px}
+#bDzwiek{width:29px;padding:4px 0;font-size:14px;line-height:1;color:#6f8296}
+#bDzwiek.gra{background:var(--zielony);border-color:var(--zielony);color:#08130c}
 footer select{padding:4px 7px;font-size:11.5px}
 footer .ikona{width:27px;height:27px}
 footer .ikona svg{width:15px;height:15px}
@@ -1776,6 +1782,7 @@ footer .jezyk button{padding:4px 8px;font-size:10.5px}
       <span class="tag" style="margin-left:10px" data-i18n="cycles">cycles</span>
       <span class="licznik" id="cykle">0</span>
     </span>
+    <button id="bDzwiek" title="">♪</button>
     <span class="warp" id="warp">—</span>
     <select id="tempo">
       <option value="1" selected>1×</option><option value="4">4×</option>
@@ -1831,6 +1838,8 @@ function ustawJezyk(l){
   document.getElementById('tempo').title=T('tempo.title');
   const lr=document.getElementById('linkRepo'); lr.href=REPO; lr.title=T('link.github');
   const lg0=document.getElementById('log'); if(lg0) lg0.title=T('log.copyHint');
+  const bdz=document.getElementById('bDzwiek');
+  if(bdz) bdz.title=T(dzwiekWl?'sound.on':'sound.off');
   document.querySelectorAll('.jezyk button').forEach(b=>b.classList.toggle('akt',b.dataset.lang===l));
   zapiszJezyk(l);
   const bd=document.getElementById('szkBadge');
@@ -2141,6 +2150,60 @@ function resetPomiary(){
 }
 
 // =====================================================================
+//  DŹWIĘK — syntezowany, bez plików, bo strona ma działać z file://
+//
+//  Ma informować, nie ozdabiać: krótki, cichy ton na każdym przejściu stanu,
+//  żeby dało się pilnować instalacji nie patrząc w ekran. Wysokość bierze się
+//  z POZYCJI stanu w tablicy, a awaria z flagi `fault` — tak samo jak reszta
+//  silnika, który nie rozpoznaje stanów po nazwie.
+// =====================================================================
+let AUDIO=null, dzwiekWl=false, ostatniTon=0;
+const SKALA=[392,440,494,523,587,659,698];   // bez półtonów, żeby się nie gryzło
+function audioGotowe(){
+  if(!AUDIO){
+    const K=window.AudioContext||window.webkitAudioContext;
+    if(!K) return false;
+    try{ AUDIO=new K(); }catch(e){ return false; }
+  }
+  if(AUDIO.state==='suspended'){ try{ AUDIO.resume(); }catch(e){} }
+  return true;
+}
+function ton(f, dlug, typ, glosno){
+  if(!dzwiekWl || !AUDIO) return;
+  const t0=AUDIO.currentTime;
+  if(t0-ostatniTon < 0.05) return;            // nie serią, gdy czas przyspieszony
+  ostatniTon=t0;
+  const o=AUDIO.createOscillator(), g=AUDIO.createGain();
+  o.type=typ||'sine'; o.frequency.setValueAtTime(f, t0);
+  // Koperta jest konieczna: skok wzmocnienia słychać jako trzask na obu
+  // krawędziach. 12 ms narastania i wykładnicze wybrzmienie do zera.
+  g.gain.setValueAtTime(0.0001, t0);
+  g.gain.exponentialRampToValueAtTime(glosno||0.055, t0+0.012);
+  g.gain.exponentialRampToValueAtTime(0.0001, t0+(dlug||0.18));
+  o.connect(g); g.connect(AUDIO.destination);
+  o.start(t0); o.stop(t0+(dlug||0.18)+0.03);
+}
+function dzwiekPrzejscia(warstwa, indeks, awaria){
+  if(!dzwiekWl) return;
+  if(awaria){                                  // dwa tony w dół, nadal cicho
+    ton(233, 0.24, 'sine', 0.05);
+    setTimeout(()=>{ ostatniTon=0; ton(175, 0.34, 'sine', 0.045); }, 170);
+    return;
+  }
+  const f=SKALA[((indeks%SKALA.length)+SKALA.length)%SKALA.length];
+  if(warstwa==='AGR') ton(f, 0.16, 'sine', 0.055);
+  else                ton(f/2, 0.24, 'triangle', 0.038);   // Deye niżej i miękcej
+}
+function ustawDzwiek(v){
+  dzwiekWl=v;
+  if(v) audioGotowe();
+  const b=document.getElementById('bDzwiek');
+  if(b){ b.classList.toggle('gra', v); b.textContent = v ? '♪' : '♪';
+         b.title=T(v?'sound.on':'sound.off'); }
+  try{ localStorage.setItem('dzwiek', v?'1':'0'); }catch(e){}
+}
+
+// =====================================================================
 //  INSTALACJA — bilans energii i falownik jako urządzenie decydujące.
 //
 //  `gen_request` NIE JEST wejściem swobodnym. Jest wyjściem Deye, policzonym
@@ -2170,7 +2233,13 @@ function warpTeraz(){
 }
 function krokDeye(){
   const d=PL.deye, s=INST.stanDeye, praca=!!we.running;
-  const nadwyzka = POM.p_pv > POM.p_load;
+  // Martwa strefa na granicy PV/rozładowanie. Bez niej, gdy PV jest bliskie
+  // odbiorom, stan migotał po kilka razy na sekundę i zasypywał dziennik.
+  // Wejście w PV wymaga 5 % nadwyżki, wyjście 5 % niedoboru.
+  const DB=0.05;
+  const nadwyzka = (s==='DEYE_PV')
+    ? (POM.p_pv > POM.p_load*(1-DB))
+    : (POM.p_pv > POM.p_load*(1+DB)+30);
   let n=s;
   switch(s){
     case 'DEYE_PV':
@@ -2188,7 +2257,11 @@ function krokDeye(){
       if(INST.soc>=d.gen_stop_soc) n = nadwyzka?'DEYE_PV':'DEYE_DISCHARGING';
       else if(!praca) n='DEYE_REQUEST'; break;
   }
-  if(n!==s){ INST.stanDeye=n; dopisz({typ:'deye', z:s, cel:n, kl:'s'}); }
+  if(n!==s){
+    INST.stanDeye=n;
+    dopisz({typ:'deye', z:s, cel:n, kl:'s'});
+    dzwiekPrzejscia('DEYE', Object.keys(PL.states_deye).indexOf(n), false);
+  }
 }
 function modelInstalacji(dtSter){
   if(!PL) return;
@@ -2296,6 +2369,7 @@ function tik(dt){
       // migawka PO zastosowaniu akcji — opis „Próba {attempts}/{attempts_max}"
       // ma pokazywać licznik już zinkrementowany
       dopisz({typ:'przejscie',z:poprz,cel:stan,i:i,snap:migawka(),kl:kl});
+      dzwiekPrzejscia('AGR', Object.keys(M.states).indexOf(stan), jestAwaria(stan));
       zastosujAkcje((M.states[stan]||{}).actions);
       if (poprz===stanIdle && stan!==stanIdle) { cyklStart=t; }
       if (poprz!==stanIdle && stan===stanIdle) {
@@ -2920,6 +2994,9 @@ document.querySelectorAll('.jezyk button').forEach(b=>{
 document.querySelectorAll('.warstwy > button').forEach(b=>{
   b.onclick=()=>ustawWarstwe(b.dataset.w);
 });
+// Kliknięcie w ten przycisk jest też gestem, którego przeglądarka wymaga,
+// zanim pozwoli cokolwiek odtworzyć — dlatego kontekst tworzymy dopiero tutaj.
+document.getElementById('bDzwiek').onclick=()=>ustawDzwiek(!dzwiekWl);
 // Bez tego zmiana rozmiaru okna nie przeliczała płótna w ogóle: svg ma teraz
 // rozmiar w pikselach, więc musi zostać przerysowany, a nie tylko przeskalowany.
 let tResize=null;
@@ -2941,6 +3018,7 @@ document.getElementById('bPrzywroc').onclick=()=>{
 (function(){
   try{
     LANG=czytajJezyk();
+    try{ dzwiekWl = localStorage.getItem('dzwiek')==='1'; }catch(e){ dzwiekWl=false; }
     const plEl=document.getElementById('plantYaml');
     if(plEl){ try{ PL=jsyaml.load(plEl.textContent); }catch(e){ PL=null;
       console.warn('instalacja nie wczytana:', e.message); } }
@@ -2951,6 +3029,7 @@ document.getElementById('bPrzywroc').onclick=()=>{
     document.getElementById('yaml').value=zrodloOryg;
     zaladuj(zrodloOryg);
     ustawJezyk(LANG);
+    ustawDzwiek(dzwiekWl);
     ustawGre(true);          // czas płynie od razu, jak w instalacji
   }catch(e){
     const b=document.getElementById('blad');
