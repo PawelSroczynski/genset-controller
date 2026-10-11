@@ -215,6 +215,600 @@ states:
         after: t_rundown
         description: "Run confirmation held {t_rundown} s after the ignition was shorted — kill circuit defective"
 </script>
+<script id="skeletonYaml" type="text/yaml">
+# =====================================================================
+#  STATE SKELETON — PYROLYSIS RETORT + CHARCOAL GASIFIER (WATER GAS)
+#
+#  mode: SKELETON. The outputs have NO pins assigned, nothing here drives
+#  hardware, and none of it may be flashed to a controller. The file records
+#  the split into layers, the sequences and the interlocks — for review and
+#  correction on paper, before the machines have signals.
+#
+#  TWO MACHINES, NOT ONE TABLE. The genset (AGR_, in state-machine.yaml) is
+#  untouched. Two parallel layers are added here, and the joint between them
+#  is a SINGLE SIGNAL each way, not shared transitions. Folding everything
+#  into one table would multiply out to 6 x 10 x 9 combinations and the table
+#  would be unreadable at the first bug.
+# =====================================================================
+
+mode: skeleton
+name: Hybrid — pyrolysis retort and water-gas gasifier
+
+layers:
+  AGR_: genset FOGO FH9000R — finished, in state-machine.yaml
+  GAZ_: gasifier ThriveOffgrid CXF CrossFire — water gas from charcoal
+  RET_: pyrolysis retort — charcoal from wood, batch process
+
+# =====================================================================
+#  THE JOINT BETWEEN LAYERS — this is the whole integration
+# =====================================================================
+#
+#  GAZ_ -> AGR_   one signal: `gas_ready`
+#                 The AGR_READY exit condition widens from `gen_request`
+#                 to `gen_request and gas_ready`.
+#                 THAT IS THE ONLY CHANGE TO THE GENSET MACHINE. Nothing else.
+#
+#  AGR_ -> GAZ_   one signal: `engine_drawing`  (AGR_ is in AGR_RUNNING)
+#                 The gasifier needs it: without the engine drawing, gas does
+#                 not flow, the reactor idles and the bed cools down.
+#
+#  RET_ -> GAZ_   NO REAL-TIME SIGNAL AT ALL.
+#                 The retort and the gasifier are coupled by INVENTORY, not by
+#                 a signal: the retort makes charcoal, the charcoal seasons in
+#                 the open for 8 days, then goes to the store, and the gasifier
+#                 draws from the store. The timescale is days, not seconds.
+#                 Wiring them with a state transition would be invented.
+#                 The only thing that crosses: store level as a COUNTER in kg,
+#                 never as a machine state.
+#
+#  SHARED, ABOVE THE LAYERS — these feed all three
+#                 `co_alarm`     carbon monoxide alarm in the plant room
+#                 `t_pile`       temperature inside the charcoal pile
+#                 `t_buffer_top` top-zone temperature of the 4 m3 buffer
+#                 None of these belongs to any layer. They are the background
+#                 all three machines operate in.
+
+# =====================================================================
+#  PARAMETERS — TBD means the number does not exist yet, and where it must
+#  come from
+# =====================================================================
+parameters:
+  # --- gasifier ---
+  t_bed_min:          TBD   # degC — water-gas reaction threshold; below it the
+                            # steam only cools the bed and the product is CO2
+                            # with unreacted water. The literature on charcoal
+                            # beds quotes 700-900 degC.
+                            # SOURCE: a thermocouple in the CXF, not a paper.
+  t_warmup_max:       TBD   # s — warm-up limit; past it, fault rather than wait
+  t_flare_min:        TBD   # s — how long the gas must burn steadily before it
+                            # may be considered fit for the engine
+  t_purge:            TBD   # s — purge of the reactor-to-mixer run before the
+                            # engine valve opens; clears air out of that section
+  kg_per_kwh:         0.82  # kg charcoal/kWh — from the CXF sheet, range 0.78-0.85
+  l_water_per_kg:     1.0   # l water/kg charcoal — vendor figure; it lands
+                            # exactly on the autothermal limit (956 g)
+  hopper_kg:          5     # kg — CXF hopper, about 1.8 h of running
+
+  # --- retort ---
+  t_devol_min:        TBD   # degC — threshold above which the pyrolysis gas
+                            # burns by itself and external firing can stop
+  t_discharge_max:    TBD   # degC — below this the retort may be opened. It must
+                            # follow from safety, not from impatience: hot char
+                            # ignites the moment it meets air.
+  t_cooldown_min:     TBD   # s — minimum time sealed, REGARDLESS of what the
+                            # thermocouple reads. The probe measures one point;
+                            # a 200 kg charge has a gradient.
+  d_seasoning:        8     # days — exposure to air in a thin layer. After 8 days
+                            # char is no longer treated as self-igniting.
+                            # This is a CALENDAR state — the only one in the
+                            # whole installation.
+
+  # --- buffer, shared ---
+  t_buffer_set:       70    # degC — working setpoint
+  t_buffer_cutoff:    78    # degC — cutoff. Above 82 degC the EPDM membrane
+                            # softens. The 4 K margin is not caution, it is
+                            # 4000 l of near-boiling water in a room full of
+                            # electronics.
+
+counters:
+  store_kg:    0   # charcoal fit for use, seasoning complete
+  season_kg:   0   # charcoal still seasoning, not yet permitted as fuel
+  batch_no:    0   # retort batch number
+  gas_attempts: 0
+
+# =====================================================================
+#  INPUTS — THESE SIGNALS DO NOT EXIST YET. This is a list to collect.
+# =====================================================================
+inputs:
+  # --- gasifier ---
+  t_bed:
+    type: analogue
+    label: Bed temperature
+    description: >-
+      Type-K thermocouple in the reduction zone. The single most important
+      measurement in the GAZ_ layer — it decides when steam may be injected
+      and when the gas is fit for the engine.
+    missing: Whether the CXF already has a thermocouple port, or it must be drilled.
+  hopper_low:
+    type: binary
+    label: Charcoal hopper low
+    description: Level switch in the 5 kg hopper. ON = refill.
+    missing: Whether the CXF has such a switch.
+  water_ok:
+    type: binary
+    label: Cracking water present
+    description: >-
+      Level in the water tank. Running out of water with a hot bed is not
+      a standstill — it is a bed burning in clean air, without the endothermic
+      reaction that was cooling it.
+  flare_flame:
+    type: binary
+    label: Flame at the flare
+    description: >-
+      Flame detector (ionisation or UV) at the flare outlet. The only direct
+      evidence that the gas is combustible rather than nitrogen and CO2.
+  engine_valve_fb:
+    type: output_feedback
+    label: Engine gas valve position feedback
+    description: Limit switch on the valve. Position must be read, not assumed.
+
+  # --- retort ---
+  t_retort:
+    type: analogue
+    label: Charge temperature
+    description: Thermocouple in the core of the charge. One point — see t_cooldown_min.
+  hatches_closed:
+    type: binary
+    label: Retort hatches closed
+    description: >-
+      Limit switches on the charging and discharge hatches, in series.
+      Pyrolysis with a hatch open is combustion of the charge, not carbonisation.
+  afterburner_flame:
+    type: binary
+    label: Flame in the pyrolysis gas afterburner
+    description: >-
+      Pyrolysis gas is tar-laden and MUST NOT be fed to the engine. It goes to
+      the afterburner and its heat to the buffer. Flame loss while devolatilising
+      means tar and CO are venting into the room instead of up the stack.
+
+  # --- shared ---
+  co_alarm:
+    type: binary
+    label: CO alarm
+    description: >-
+      The same detector that already feeds IN-02 of the genset.
+      !! A DELIBERATE GAP: a CO detector does not see hydrogen. Water gas is
+      close to 28 % H2, and hydrogen rises to the ceiling. Ventilation from the
+      highest point of the room is the safeguard here, not the detector.
+  t_pile:
+    type: analogue
+    label: Temperature inside the charcoal pile
+    description: >-
+      The only early warning of char self-ignition. It belongs to no machine —
+      a pile heats itself with nobody's involvement. A rising trend means rake
+      the pile out. This is not extinguished with water.
+  t_buffer_top:
+    type: analogue
+    label: Buffer top-zone temperature
+    description: Cuts heat recovery before the EPDM membrane has to work at 80 degC.
+
+# =====================================================================
+#  OUTPUTS — NO PINS. A list of intent, not a configuration.
+# =====================================================================
+outputs:
+  blower:
+    pin: TBD
+    label: Primary air blower
+    description: Air to the oxidation zone. That is what powers the endothermic reaction.
+  steam_injection:
+    pin: TBD
+    label: Steam injection
+    description: >-
+      HARD INTERLOCK: only while t_bed > t_bed_min and water_ok.
+      Steam onto a cold bed is lost heat and gas with no calorific value.
+  flare_valve:
+    pin: TBD
+    label: Valve to the flare
+    description: The gas path to open air. Default state OPEN — the gas must have a way out.
+  engine_gas_valve:
+    pin: TBD
+    label: Gas valve to the engine
+    description: >-
+      Opening is permitted only from GAZ_READY, after the purge.
+      Default state CLOSED. Loss of power must close it by itself —
+      a spring-return valve, not a bistable one.
+  buffer_pump:
+    pin: TBD
+    label: Heat recovery circulation pump to the buffer
+  dump_radiator:
+    pin: TBD
+    label: Three-way valve to the dump radiator
+    description: >-
+      Above t_buffer_cutoff the heat goes to air. A lit retort batch CANNOT BE
+      STOPPED — 200 kg of charge releases about 1000 kWh and the buffer holds
+      209 kWh. The dump radiator is not a safeguard against a fault, it is part
+      of normal operation.
+  ignition_burner:
+    pin: TBD
+    label: Retort ignition burner
+    description: External heat source until devolatilisation is self-sustaining.
+  afterburner_valve:
+    pin: TBD
+    label: Pyrolysis gas valve to the afterburner
+
+# =====================================================================
+#  LAYER GAZ_ — GASIFIER
+# =====================================================================
+states_gas:
+  GAZ_COLD:
+    x: 70
+    y: 40
+    description: >-
+      Reactor cold, bed may or may not be loaded. Engine valve closed, flare
+      open. The resting state — and the one everything returns to.
+    outputs: { blower: false, steam_injection: false, flare_valve: true, engine_gas_valve: false }
+    signals: { gas_ready: false }
+    transitions:
+      - to: GAZ_LIGHTING
+        when: gas_demand and store_kg > 0 and not co_alarm
+        description: Run requested, charcoal in the store
+
+  GAZ_LIGHTING:
+    x: 300
+    y: 40
+    description: >-
+      Lighting the bed. OPEN QUESTION: does the CXF have electric bed ignition,
+      or is it lit by hand only. If by hand, this is NOT a controller state —
+      it is a human state, and the controller merely waits on t_bed with
+      nothing here to energise.
+    outputs: { blower: true, steam_injection: false, flare_valve: true, engine_gas_valve: false }
+    signals: { gas_ready: false }
+    transitions:
+      - to: GAZ_FAULT
+        when: co_alarm
+      - to: GAZ_WARMUP
+        when: t_bed > 300
+        description: Bed has caught — it climbs on its own from here
+
+  GAZ_WARMUP:
+    x: 530
+    y: 40
+    description: >-
+      The bed climbs to reaction temperature. NO STEAM YET — this phase is
+      purely exothermic, air onto charcoal. The gas is weak, goes to the flare
+      and is not treated as combustible.
+    outputs: { blower: true, steam_injection: false, flare_valve: true, engine_gas_valve: false }
+    signals: { gas_ready: false }
+    transitions:
+      - to: GAZ_FAULT
+        when: co_alarm
+      - to: GAZ_FAULT
+        after: t_warmup_max
+        description: Bed failed to reach temperature within the limit — wet charcoal or a draught
+      - to: GAZ_FLARE
+        when: t_bed > t_bed_min and water_ok
+        description: Reaction temperature reached and water present — steam may be injected
+
+  GAZ_FLARE:
+    x: 760
+    y: 40
+    description: >-
+      Full water-gas reaction, steam injected, but the gas STILL GOES TO THE
+      FLARE. This is the evidential state: the flame at the flare is the only
+      direct proof that the pipe carries combustible gas rather than nitrogen
+      and CO2. Only after t_flare_min of steady flame may the gas be considered
+      fit for the engine. It is also the only place where air leaves the line.
+    outputs: { blower: true, steam_injection: true, flare_valve: true, engine_gas_valve: false }
+    signals: { gas_ready: false }
+    transitions:
+      - to: GAZ_FAULT
+        when: co_alarm
+      - to: GAZ_WARMUP
+        when: t_bed < t_bed_min
+        description: Bed quenched by the injection — steam OFF, reheat
+      - to: GAZ_FAULT
+        when: not water_ok
+        description: No water with a hot bed — the charcoal burns without the cracking reaction
+      - to: GAZ_READY
+        when: flare_flame
+        after: t_flare_min
+        description: Flame steady for {t_flare_min} s — gas accepted
+
+  GAZ_READY:
+    x: 990
+    y: 40
+    description: >-
+      THIS IS THE JOINT. The only state that raises the `gas_ready` signal read
+      by the AGR_ layer. The reactor makes gas to the flare and waits. The
+      genset may start, or may not. The engine valve is still closed — it opens
+      only after the purge, once the genset reports that it is drawing.
+    outputs: { blower: true, steam_injection: true, flare_valve: true, engine_gas_valve: false }
+    signals: { gas_ready: true }
+    transitions:
+      - to: GAZ_FAULT
+        when: co_alarm
+      - to: GAZ_FLARE
+        when: not flare_flame or t_bed < t_bed_min
+        description: Gas quality lost — the ready signal is withdrawn
+      - to: GAZ_PURGE
+        when: engine_drawing
+        description: Genset confirmed running — purge the run to the mixer
+      - to: GAZ_SHUTDOWN
+        when: not gas_demand
+        description: Demand withdrawn without the engine ever starting
+
+  GAZ_PURGE:
+    x: 760
+    y: 170
+    description: >-
+      The reactor-to-mixer run is full of air. Before the engine valve opens,
+      that run must be filled with gas. A separate state, because it is a
+      separate hazard: hydrogen mixed with air in a closed pipe has a wide
+      explosive range.
+    outputs: { blower: true, steam_injection: true, flare_valve: true, engine_gas_valve: false }
+    signals: { gas_ready: true }
+    transitions:
+      - to: GAZ_FAULT
+        when: co_alarm
+      - to: GAZ_SUPPLYING
+        after: t_purge
+        when: engine_drawing
+        description: Line purged — engine valve opens
+      - to: GAZ_READY
+        when: not engine_drawing
+        description: Engine stopped drawing mid-purge
+
+  GAZ_SUPPLYING:
+    x: 990
+    y: 170
+    description: >-
+      Gas flows to the engine. The flare stays OPEN — the gas must keep a way
+      out even if the engine suddenly stops drawing. Closing both paths on a
+      hot reactor is pressure rise in a closed vessel.
+    outputs: { blower: true, steam_injection: true, flare_valve: true, engine_gas_valve: true }
+    signals: { gas_ready: true }
+    transitions:
+      - to: GAZ_FAULT
+        when: co_alarm
+      - to: GAZ_READY
+        when: not engine_drawing
+        description: Engine stopped — engine valve closes, gas returns to the flare
+      - to: GAZ_SHUTDOWN
+        when: not gas_demand
+        description: End of cycle
+
+  GAZ_SHUTDOWN:
+    x: 300
+    y: 170
+    description: >-
+      UNRESOLVED STATE — TWO PROCEDURES WITH OPPOSITE RISKS. This has to be
+      settled with ThriveOffgrid, because it decides what is left in the room
+      overnight.
+        (a) DRAW DOWN with the engine: run until the bed is spent. The reactor
+            ends up cold and empty, but the engine gets the worst-quality gas
+            at the end and air passes through the reactor.
+        (b) SEAL IT: cut the air and let it die. A hot bed remains, with CO in
+            the reactor. Gas-tightness becomes the safeguard.
+      Not choosing on the vendor's behalf. The skeleton leaves the branch open.
+    outputs: { blower: TBD, steam_injection: false, flare_valve: true, engine_gas_valve: false }
+    signals: { gas_ready: false }
+    transitions:
+      - to: GAZ_COOLDOWN
+        when: TBD
+        description: Depends on the chosen procedure
+
+  GAZ_COOLDOWN:
+    x: 70
+    y: 170
+    description: >-
+      Reactor hot, not producing. The room needs ventilation — CO is still
+      being formed in this state and there is no longer a flame burning it off.
+    outputs: { blower: false, steam_injection: false, flare_valve: true, engine_gas_valve: false }
+    signals: { gas_ready: false }
+    transitions:
+      - to: GAZ_COLD
+        when: t_bed < 60
+
+  GAZ_FAULT:
+    x: 530
+    y: 170
+    fault: true
+    description: >-
+      Steam OFF, blower OFF, engine valve CLOSED, flare OPEN. The flare stays
+      open deliberately: in a fault the gas must have a way out to open air,
+      not into the room and not into the engine.
+      Reset only after cooldown — a hot reactor is still a gas source.
+    outputs: { blower: false, steam_injection: false, flare_valve: true, engine_gas_valve: false }
+    signals: { gas_ready: false }
+    transitions:
+      - to: GAZ_COLD
+        when: reset and not co_alarm and t_bed < 60
+
+# =====================================================================
+#  LAYER RET_ — PYROLYSIS RETORT
+#
+#  A CONSTITUTIONAL DIFFERENCE FROM THE OTHER LAYERS:
+#  once lit, a retort CANNOT BE STOPPED. The genset is killed by shorting the
+#  ignition, the gasifier by cutting its air — but 200 kg of charge that has
+#  started devolatilising will run to the end whatever the controller does.
+#  So this layer has no "stopping" state. It has RET_DEVOLATILISING, whose only
+#  exit is the end of the process, and a FAULT state that can do no more than
+#  divert the heat to the dump radiator and call a human.
+#  DESIGN CONSEQUENCE: the decision is made at lighting, not during the run.
+#  The entry conditions must therefore be harder than anywhere else.
+# =====================================================================
+states_retort:
+  RET_COLD:
+    x: 70
+    y: 40
+    description: Retort cold, empty or holding a finished charge. Hatches may be opened.
+    outputs: { ignition_burner: false, afterburner_valve: false, buffer_pump: false }
+    transitions:
+      - to: RET_CHARGING
+        when: charge_demand
+
+  RET_CHARGING:
+    x: 300
+    y: 40
+    description: Loading wood. Hatches open. Lighting is interlocked in hardware.
+    outputs: { ignition_burner: false, afterburner_valve: false, buffer_pump: false }
+    transitions:
+      - to: RET_LIGHTING
+        when: hatches_closed and pyrolysis_demand and t_buffer_top < t_buffer_set and not co_alarm
+        actions: { batch_no: "+1" }
+        description: >-
+          Four conditions at once, and that is deliberate. A cold buffer is one
+          of them: a batch releases about 1000 kWh, the buffer holds 209 kWh.
+          Starting with the buffer at 65 degC condemns the whole batch to the
+          dump radiator.
+
+  RET_LIGHTING:
+    x: 530
+    y: 40
+    description: >-
+      The external burner heats the charge to the self-sustaining threshold.
+      The only state in this layer that can still be called off at no cost.
+    outputs: { ignition_burner: true, afterburner_valve: true, buffer_pump: true }
+    transitions:
+      - to: RET_FAULT
+        when: co_alarm or not hatches_closed
+      - to: RET_COLD
+        when: not pyrolysis_demand
+        description: Called off — the last moment at which this still costs nothing
+      - to: RET_DEVOLATILISING
+        when: t_retort > t_devol_min and afterburner_flame
+        description: Pyrolysis gas burns by itself — the burner can be shut down
+
+  RET_DEVOLATILISING:
+    x: 760
+    y: 40
+    description: >-
+      Self-sustaining process. Pyrolysis gas to the afterburner, heat to the
+      buffer. THERE IS NO EXIT FROM THIS STATE ON DEMAND. The batch ends when
+      it ends. Flame loss in the afterburner is an immediate fault: tar and CO
+      then go into the room instead of up the stack.
+    outputs: { ignition_burner: false, afterburner_valve: true, buffer_pump: true }
+    transitions:
+      - to: RET_FAULT
+        when: co_alarm or not afterburner_flame or not hatches_closed
+      - to: RET_FINISHING
+        when: TBD
+        description: Gas evolution ceases — end of devolatilisation
+        missing: >-
+          The end criterion. It does not follow from the thermocouple alone.
+          Retort practice relies on the afterburner flame dying out. To be
+          established on the first runs — this condition is a placeholder.
+
+  RET_FINISHING:
+    x: 990
+    y: 40
+    description: Residual evolution. Heat recovery still worth taking.
+    outputs: { ignition_burner: false, afterburner_valve: true, buffer_pump: true }
+    transitions:
+      - to: RET_FAULT
+        when: co_alarm
+      - to: RET_COOLDOWN
+        when: t_retort < t_devol_min
+
+  RET_COOLDOWN:
+    x: 990
+    y: 170
+    description: >-
+      THE CHARGE COOLS SEALED INSIDE THE RETORT. Opening a hot retort feeds
+      oxygen to char with an enormous developed surface — it ignites at once.
+      The exit requires BOTH conditions: temperature AND time. Time is there
+      because the thermocouple reads one point, while a 200 kg charge has a
+      gradient and its core stays hot longer than the probe shows.
+    outputs: { ignition_burner: false, afterburner_valve: false, buffer_pump: true }
+    transitions:
+      - to: RET_FAULT
+        when: not hatches_closed
+        description: Attempt to open before time
+      - to: RET_DISCHARGING
+        when: t_retort < t_discharge_max
+        after: t_cooldown_min
+        description: Temperature AND time — both, not either
+
+  RET_DISCHARGING:
+    x: 760
+    y: 170
+    description: >-
+      Removing the char. It goes out in a THIN LAYER to seasoning, not into
+      bags and not onto the pile. The point is to carry the chemisorption heat
+      away, not to exclude oxygen — hence airy, not sealed.
+    outputs: { ignition_burner: false, afterburner_valve: false, buffer_pump: false }
+    transitions:
+      - to: RET_SEASONING
+        when: discharge_complete
+        actions: { season_kg: "+batch" }
+
+  RET_SEASONING:
+    x: 530
+    y: 170
+    description: >-
+      A CALENDAR STATE, THE ONLY ONE IN THE WHOLE INSTALLATION. It counts in
+      days, not seconds, and it must survive controller restarts — which means
+      its timestamp MUST live in non-volatile memory. Globals with
+      `restore_value: false`, as in the genset machine, will not do.
+      Fresh char self-ignites through oxygen chemisorption. After 8 days of
+      exposure it is no longer treated as dangerous.
+      The retort may be working on the next batch meanwhile — this layer is
+      REENTRANT at this point and the skeleton does not yet handle that.
+    outputs: { ignition_burner: false, afterburner_valve: false, buffer_pump: false }
+    transitions:
+      - to: RET_FAULT
+        when: t_pile_rising
+        description: Self-heating — rake the layer out. This is not extinguished with water.
+      - to: RET_COLD
+        after: d_seasoning
+        actions: { store_kg: "+season_kg", season_kg: 0 }
+        description: 8 days elapsed — the charcoal may be burned in the gasifier
+
+  RET_FAULT:
+    x: 300
+    y: 170
+    fault: true
+    description: >-
+      Burner OFF, heat to the dump radiator, call a human.
+      AND THAT IS ALL THIS FAULT STATE CAN DO. If it was entered from
+      RET_DEVOLATILISING the process continues regardless — the controller
+      stops steering it but does not stop it. This is not a flaw in the
+      skeleton, it is a property of batch pyrolysis, and it is why the entry
+      conditions into RET_LIGHTING are as hard as they are.
+    outputs: { ignition_burner: false, afterburner_valve: true, buffer_pump: true, dump_radiator: true }
+    transitions:
+      - to: RET_COLD
+        when: reset and not co_alarm and t_retort < t_discharge_max
+
+# =====================================================================
+#  WHAT THIS SKELETON DOES NOT YET HANDLE — stated openly
+# =====================================================================
+gaps:
+  - >-
+    REENTRANCY OF RET_SEASONING. Seasoning runs for 8 days while the retort can
+    be working the next batch. One state machine cannot be in two states at
+    once. Seasoning should leave the machine and become a COUNTER WITH A DATE
+    (batch plus discharge date), not a state. This is the most serious flaw in
+    this skeleton and it is known.
+  - >-
+    NON-VOLATILE MEMORY. The genset needs no memory across restarts — here
+    `season_kg`, `store_kg` and the batch dates must survive a power cut.
+  - >-
+    THE END-OF-DEVOLATILISATION CRITERION. The condition in RET_DEVOLATILISING
+    is a placeholder, to be established by measurement on the first runs.
+  - >-
+    CXF SHUTDOWN PROCEDURE. The branch is left open deliberately — (a) and (b)
+    carry opposite risks and this is a question for ThriveOffgrid.
+  - >-
+    HYDROGEN. A CO detector does not see H2, and water gas is 28 % H2. The
+    safeguard is gravity ventilation from the highest point of the room, not any
+    sensor listed here. That is a BUILDING requirement, not a programming one,
+    which is why it appears in no transition.
+  - >-
+    THERMAL COUPLING OF TWO SOURCES. The retort and the gasifier can both heat
+    the buffer at once and will overfill it together. Settling the buildings'
+    heat demand is a precondition for designing any priority between them.
+</script>
 <script id="i18n">
 // =====================================================================
 //  WARSTWA TŁUMACZEŃ
@@ -268,6 +862,12 @@ const I18N = {
       'word.when':        'when',
       'word.hold':        'hold',
       'word.datasheet':   'datasheet',
+      'skeleton.badge':   'skeleton \u2014 not simulated, English only',
+      'skeleton.pick':    'Click a state in the diagram to read it',
+      'layer.agr.title':  'Genset \u2014 live machine, simulated',
+      'layer.gaz.title':  'Charcoal gasifier \u2014 state skeleton, not simulated',
+      'layer.ret.title':  'Pyrolysis retort \u2014 state skeleton, not simulated',
+      'word.missing':     'to be established',
       'err.yaml':         'YAML error:',
       'err.load':         'Failed to load definition:',
       'err.noStates':     'Missing "states" section'
@@ -312,6 +912,12 @@ const I18N = {
       'word.when':        'gdy',
       'word.hold':        'przytrzymanie',
       'word.datasheet':   'karta katalogowa',
+      'skeleton.badge':   'szkielet \u2014 bez symulacji, tylko po angielsku',
+      'skeleton.pick':    'Kliknij stan na schemacie, żeby go przeczytać',
+      'layer.agr.title':  'Agregat \u2014 maszyna żywa, symulowana',
+      'layer.gaz.title':  'Gazogenerator \u2014 szkielet stanów, bez symulacji',
+      'layer.ret.title':  'Retorta pirolityczna \u2014 szkielet stanów, bez symulacji',
+      'word.missing':     'do ustalenia',
       'err.yaml':         'Błąd YAML:',
       'err.load':         'Błąd wczytywania definicji:',
       'err.noStates':     'Brak sekcji "states"'
@@ -394,8 +1000,8 @@ const REPO = 'https://github.com/PawelSroczynski/genset-controller';
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
   background:var(--tlo);color:var(--tekst);font-size:14px;height:100vh;overflow:hidden;
   display:flex;flex-direction:column}
-header{background:#101720;border-bottom:1px solid var(--linia);padding:9px 14px;
-  display:flex;align-items:center;justify-content:space-between;gap:10px 14px;
+header{background:#101720;border-bottom:1px solid var(--linia);padding:9px 18px;
+  display:flex;align-items:center;gap:10px 14px;
   flex:0 0 auto;flex-wrap:wrap}
 h1{font-size:15px;font-weight:700;min-width:0;flex:1 1 auto}
 h1 span{color:var(--szary);font-weight:400;font-size:12px;margin-left:9px}
@@ -415,7 +1021,7 @@ button.gra{background:var(--zielony);border-color:var(--zielony);color:#08130c;f
 button.stop{background:var(--amber);border-color:var(--amber);color:#2a1d00;font-weight:600}
 select{background:var(--panel2);color:var(--tekst);border:1px solid var(--linia);
   border-radius:7px;padding:6px 8px;font-size:12.5px;font-family:inherit}
-main{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:12px;padding:12px 18px 14px}
+main{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:12px;padding:12px 18px}
 .diagram{flex:1 1 40%;min-height:0;background:var(--panel);border:1px solid var(--linia);
   border-radius:12px;padding:10px;display:flex}
 svg{width:100%;height:100%;display:block}
@@ -524,6 +1130,38 @@ textarea{flex:1 1 auto;min-height:300px;background:#0f151c;color:#cfe0ee;border:
   border:1px solid var(--linia);border-radius:7px;background:var(--panel2);color:#9fb4c7}
 .ikona:hover{background:#2c3a4a;border-color:#3d5062;color:var(--tekst)}
 .ikona svg{width:17px;height:17px;display:block;fill:currentColor}
+/* przełącznik warstw w diagramie */
+.diagram{position:relative;flex-direction:column}
+.warstwy{position:absolute;top:9px;left:11px;z-index:5;display:flex;align-items:center;gap:9px}
+.warstwy>button{padding:3px 9px;font-size:10.5px;font-weight:700;letter-spacing:.7px;
+  font-family:ui-monospace,monospace;border-radius:0;border:1px solid var(--linia);
+  background:#1b2530;color:#7f94a8}
+.warstwy>button:first-of-type{border-radius:6px 0 0 6px}
+.warstwy>button:last-of-type{border-radius:0 6px 6px 0}
+.warstwy>button+button{border-left:none}
+.warstwy>button.akt{background:var(--akcent);border-color:var(--akcent);color:#0d1922}
+.szk-plakietka{font-size:9.5px;letter-spacing:.8px;text-transform:uppercase;color:#e0a14b;
+  background:#2a2208;border:1px solid #5a4a12;border-radius:4px;padding:2px 7px;display:none}
+.szk-plakietka.widac{display:inline-block}
+.przej .brak{color:#e0a14b;display:block;margin-top:2px}
+/* stopka — pasek odnośników, zdjęty z nagłówka */
+/* Stopka niesie CAŁY pasek: odnośniki, licznik cyklu, tempo, przyciski,
+   repozytorium i język. Nagłówek to już tylko tytuł. */
+footer{flex:0 0 auto;background:#101720;border-top:1px solid var(--linia);
+  padding:7px 18px;display:flex;align-items:center;
+  gap:7px 14px;flex-wrap:wrap}
+footer .linki a{font-size:11.5px;color:#7f94a8}
+footer .linki a:hover{color:var(--akcent);text-decoration:underline}
+.stopka-prawa{display:inline-flex;align-items:center;gap:8px;margin-left:auto;flex-wrap:wrap}
+footer .cykl{padding:3px 9px;border-radius:7px;gap:5px}
+footer .cykl-czas{font-size:14px}
+footer .cykl-opis{font-size:10.5px}
+footer button{padding:5px 10px;font-size:11.5px}
+footer select{padding:4px 7px;font-size:11.5px}
+footer .ikona{width:27px;height:27px}
+footer .ikona svg{width:15px;height:15px}
+footer .jezyk button{padding:4px 8px;font-size:10.5px}
+@media(max-width:860px){ .stopka-prawa{margin-left:0} }
 /* licznik filtra przytrzymania wejścia */
 .filtr{display:inline-block;margin-left:7px;font-family:ui-monospace,monospace;font-size:10px;
   color:var(--amber);background:#2a2208;border:1px solid #5a4a12;border-radius:3px;
@@ -534,36 +1172,16 @@ textarea{flex:1 1 auto;min-height:300px;background:#0f151c;color:#cfe0ee;border:
 <body>
 <header>
   <h1><span data-i18n="title">Genset controller simulator</span> <span id="podtytul"></span></h1>
-  <div class="sterowanie">
-    <div class="cykl">
-      <span class="tag" data-i18n="cycle">cycle</span>
-      <span class="cykl-czas" id="cyklCzas">—</span>
-      <span class="cykl-opis" id="cyklOpis"></span>
-      <span class="tag" style="margin-left:14px" data-i18n="cycles">cycles</span>
-      <span class="licznik" id="cykle">0</span>
-    </div>
-    <select id="tempo">
-      <option value="1" selected>1×</option><option value="4">4×</option>
-      <option value="10">10×</option><option value="30">30×</option>
-    </select>
-    <button id="bReset" data-i18n="btn.reset">↺ Restart</button>
-    <button id="bYaml">YAML</button>
-    <span class="linki" id="linkiSter"></span>
-    <span class="linki sep">
-      <a href="state-machine.yaml">state-machine.yaml</a>
-      <a href="genset-controller.yaml" data-i18n="link.config">configuration</a>
-    </span>
-    <a class="ikona" id="linkRepo" href="#" target="_blank" rel="noopener">
-      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.07-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A7.995 7.995 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
-    </a>
-    <span class="jezyk">
-      <button data-lang="pl">PL</button><button data-lang="en">EN</button>
-    </span>
-  </div>
 </header>
 
 <main>
-  <div class="diagram"><svg id="svg" preserveAspectRatio="xMidYMid meet"></svg></div>
+  <div class="diagram">
+    <div class="warstwy">
+      <button data-w="AGR" class="akt">AGR_</button><button data-w="GAZ">GAZ_</button><button data-w="RET">RET_</button>
+      <span class="szk-plakietka" id="szkBadge"></span>
+    </div>
+    <svg id="svg" preserveAspectRatio="xMidYMid meet"></svg>
+  </div>
 
   <div class="kolumny">
     <div class="karta">
@@ -594,6 +1212,36 @@ textarea{flex:1 1 auto;min-height:300px;background:#0f151c;color:#cfe0ee;border:
     </div>
   </div>
 </main>
+
+<footer>
+  <span class="linki" id="linkiSter"></span>
+  <span class="linki sep">
+    <a href="state-machine.yaml">state-machine.yaml</a>
+    <a href="genset-controller.yaml" data-i18n="link.config">configuration</a>
+    <a href="hybrid-skeleton.yaml">hybrid-skeleton.yaml</a>
+  </span>
+  <span class="stopka-prawa">
+    <span class="cykl">
+      <span class="tag" data-i18n="cycle">cycle</span>
+      <span class="cykl-czas" id="cyklCzas">—</span>
+      <span class="cykl-opis" id="cyklOpis"></span>
+      <span class="tag" style="margin-left:10px" data-i18n="cycles">cycles</span>
+      <span class="licznik" id="cykle">0</span>
+    </span>
+    <select id="tempo">
+      <option value="1" selected>1×</option><option value="4">4×</option>
+      <option value="10">10×</option><option value="30">30×</option>
+    </select>
+    <button id="bReset" data-i18n="btn.reset">↺ Restart</button>
+    <button id="bYaml">YAML</button>
+    <a class="ikona" id="linkRepo" href="#" target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.07-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A7.995 7.995 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+    </a>
+    <span class="jezyk">
+      <button data-lang="pl">PL</button><button data-lang="en">EN</button>
+    </span>
+  </span>
+</footer>
 
 <div class="modal" id="modal">
   <div class="modal-box">
@@ -635,7 +1283,13 @@ function ustawJezyk(l){
   const lr=document.getElementById('linkRepo'); lr.href=REPO; lr.title=T('link.github');
   document.querySelectorAll('.jezyk button').forEach(b=>b.classList.toggle('akt',b.dataset.lang===l));
   zapiszJezyk(l);
-  if(M){ naglowek(); rysujWejscia(); cacheWy=null; cacheLic=null; ostatniStan=null; ostatniSvg=''; odswiez(); }
+  const bd=document.getElementById('szkBadge');
+  if(bd){ bd.textContent=T('skeleton.badge'); }
+  document.querySelectorAll('.warstwy > button').forEach(b=>{
+    b.title=T('layer.'+b.dataset.w.toLowerCase()+'.title');
+  });
+  if(M){ naglowek(); rysujWejscia(); cacheWy=null; cacheLic=null;
+         ostatniStan=null; ostatniSvg=''; panelStanu(); rysujDziennik(); odswiez(); }
 }
 
 const esc=(s)=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -647,6 +1301,41 @@ let poprzWe={}, poprzWy={}, poprzF={};
 let weF={}, holdT={};                  // wartości po filtrze przytrzymania i ich zegary
 const PROG_NIEUDANEJ=0.25;             // udział prób, które nie zaskoczą
 let M=null, stan=null, t=0, wStanie=0, we={}, lic={}, gra=false, petla=null, zrodlo='';
+// warstwy: AGR_ jest maszyną żywą, GAZ_ i RET_ to szkielet z hybrid-skeleton.yaml,
+// rysowany poglądowo. Szkielet nie ma sygnałów ani parametrów, więc go nie symulujemy —
+// `gotowe()` nie jest na nim wywoływane i żaden węzeł nie jest „bieżący".
+let SZK=null, warstwa='AGR', wybSzk=null;
+function stanySzk(w){ return w==='GAZ' ? (SZK||{}).states_gas : (SZK||{}).states_retort; }
+function stanyRys(){ return warstwa==='AGR' ? (M?M.states:{}) : (stanySzk(warstwa)||{}); }
+function wybierzSzk(k){ wybSzk=k; panelStanu(); ostatniSvg=''; odswiez(); }
+function ustawWarstwe(w){
+  warstwa=w; wybSzk=null;
+  document.querySelectorAll('.warstwy > button').forEach(b=>b.classList.toggle('akt',b.dataset.w===w));
+  const bd=document.getElementById('szkBadge');
+  bd.classList.toggle('widac', w!=='AGR'); bd.textContent=T('skeleton.badge');
+  ostatniStan=null; ostatniSvg='';
+  panelStanu(); odswiez();
+}
+function panelStanu(){
+  if(warstwa==='AGR'){ ostatniStan=null; return; }   // wypełni odswiez()
+  const S=stanySzk(warstwa)||{};
+  const nz=document.getElementById('stanNazwa'), op=document.getElementById('stanOpis');
+  const pc=document.getElementById('przejscia');
+  pc.innerHTML='';
+  if(!wybSzk || !S[wybSzk]){ nz.textContent=warstwa+'_'; op.textContent=T('skeleton.pick'); return; }
+  const v=S[wybSzk];
+  nz.textContent=wybSzk;
+  op.textContent=v.description||'';
+  for(const q of (v.transitions||[])){
+    const e=document.createElement('div'); e.className='przej';
+    let w='→ <b>'+esc(q.to)+'</b>';
+    if(q.when!==undefined) w+=' <code>'+esc(String(q.when))+'</code>';
+    if(q.after!==undefined) w+=' <code>'+esc(T('word.after')+' '+q.after)+'</code>';
+    if(q.description) w+='<small>'+esc(q.description)+'</small>';
+    if(q.missing) w+='<small class="brak">⚠ '+esc(T('word.missing'))+': '+esc(q.missing)+'</small>';
+    e.innerHTML=w; pc.appendChild(e);
+  }
+}
 
 function wyrazenie(txt){
   return String(txt)
@@ -725,16 +1414,60 @@ function resetuj(){
   poprzF={};  for(const k in (M.inputs||{})) poprzF[k]=!!weF[k];
   poprzWy={}; const w0=wyjsciaStanu();
   for(const k in (M.outputs||{})) poprzWy[k]=!!w0[k];
-  document.getElementById('log').innerHTML='';
-  loguj(T('log.reset'),'s');
+  DZIENNIK.length=0; document.getElementById('log').innerHTML='';
+  dopisz({typ:'reset',kl:'s'});
   odswiez();
 }
-function loguj(txt,kl){
+// ---------------------------------------------------------------------
+//  DZIENNIK ZDARZEŃ — przechowywany jako DANE, nie jako gotowy tekst.
+//  Gdyby wiersze były tekstem, zostawałyby w języku z chwili zdarzenia
+//  i po przełączeniu języka dziennik byłby dwujęzyczny.
+//
+//  PUŁAPKA: podstawienia `{attempts}` muszą być ZAMROŻONE w chwili zdarzenia.
+//  Licznik prób rośnie w trakcie cyklu, więc podstawienie z aktualnych wartości
+//  pokazałoby w starym wierszu nowy stan licznika. Dlatego każdy wpis niesie
+//  własną migawkę `snap`.
+//
+//  Wstawianie pojedynczego wiersza NIE przebudowuje listy — pełna przebudowa
+//  jest tylko przy zmianie języka. Inaczej wrócilibyśmy do kasowania zaznaczenia
+//  tekstu dziesięć razy na sekundę.
+// ---------------------------------------------------------------------
+const DZIENNIK=[], LIMIT_DZ=500;
+function migawka(){ return Object.assign({}, lic, M?M.parameters:{}); }
+function podstawZ(s, snap){
+  return String(s).replace(/\{(\w+)\}/g,(m,k)=> (snap&&snap[k]!==undefined) ? snap[k] : m);
+}
+function tekstWpisu(e){
+  switch(e.typ){
+    case 'reset': return T('log.reset');
+    case 'pin':   return (e.v?'▲ ':'▼ ')+opisPinu(e.grupa,e.k)+(e.v?' — ON':' — OFF');
+    case 'filtr': return (e.v?'▲ ':'▼ ')+T('log.filter')+' '+opisPinu(e.grupa,e.k)+(e.v?' — ON':' — OFF');
+    case 'przejscie': {
+      const p=((M.states[e.z]||{}).transitions||[])[e.i];
+      const op = p ? opisPrzejscia(e.z,e.i,p) : '';
+      return e.z+' → '+e.cel+(op?'  · '+podstawZ(op,e.snap):'');
+    }
+    case 'cykl':  return T('log.cycleClosed')+' — '+e.s+' s';
+    case 'model': return e.co==='catch' ? T('log.catch')+' '+e.s+' s' : T('log.'+e.co);
+    default: return e.txt||'';
+  }
+}
+function wierszDz(e){
+  return '<span class="t">['+e.t.toFixed(1).padStart(6)+'s]</span> '+
+    (e.kl?'<span class="'+e.kl+'">'+esc(tekstWpisu(e))+'</span>':esc(tekstWpisu(e)));
+}
+function dopisz(e){
+  e.t=t;
+  DZIENNIK.unshift(e); if(DZIENNIK.length>LIMIT_DZ) DZIENNIK.length=LIMIT_DZ;
   const el=document.getElementById('log');
-  const d=document.createElement('div');
-  d.innerHTML='<span class="t">['+t.toFixed(1).padStart(6)+'s]</span> '+
-    (kl?'<span class="'+kl+'">'+txt+'</span>':txt);
+  const d=document.createElement('div'); d.innerHTML=wierszDz(e);
   el.insertBefore(d, el.firstChild); el.scrollTop=0;
+  while(el.childNodes.length>LIMIT_DZ) el.removeChild(el.lastChild);
+}
+function rysujDziennik(){        // pełna przebudowa — tylko przy zmianie języka
+  const el=document.getElementById('log');
+  el.innerHTML=DZIENNIK.map(e=>'<div>'+wierszDz(e)+'</div>').join('');
+  el.scrollTop=0;
 }
 function podstaw(s){
   return String(s).replace(/\{(\w+)\}/g,(m,k)=>{
@@ -762,7 +1495,7 @@ function logujZmianyWe(){
   for(const k in (M.inputs||{})){
     const v=!!we[k];
     if(poprzWe[k]!==v){ poprzWe[k]=v;
-      loguj((v?'▲ ':'▼ ')+opisPinu('inputs',k)+(v?' — ON':' — OFF'), v?'pu':'pd'); }
+      dopisz({typ:'pin',grupa:'inputs',k:k,v:v,kl:v?'pu':'pd'}); }
   }
 }
 // zmiana po filtrze to osobne zdarzenie od zmiany na pinie — i osobny wiersz
@@ -771,7 +1504,7 @@ function logujZmianyFiltr(){
     if(limitHold(k)===null||limitHold(k)===undefined) continue;
     const v=!!weF[k];
     if(poprzF[k]!==v){ poprzF[k]=v;
-      loguj((v?'▲ ':'▼ ')+T('log.filter')+' '+opisPinu('inputs',k)+(v?' — ON':' — OFF'), v?'pu':'pd'); }
+      dopisz({typ:'filtr',grupa:'inputs',k:k,v:v,kl:v?'pu':'pd'}); }
   }
 }
 function logujZmianyWy(){
@@ -779,7 +1512,7 @@ function logujZmianyWy(){
   for(const k in (M.outputs||{})){
     const v=!!wy[k];
     if(poprzWy[k]!==v){ poprzWy[k]=v;
-      loguj((v?'▲ ':'▼ ')+opisPinu('outputs',k)+(v?' — ON':' — OFF'), v?'pu':'pd'); }
+      dopisz({typ:'pin',grupa:'outputs',k:k,v:v,kl:v?'pu':'pd'}); }
   }
 }
 function jestAwaria(k){ return !!((M.states[k]||{}).fault); }
@@ -831,22 +1564,23 @@ function tik(dt){
       zastosujAkcje(p.actions);
       stan=p.to; wStanie=0;
       const kl = jestAwaria(stan)?'a':'s';
-      const op = opisPrzejscia(poprz,i,p);
-      loguj(poprz+' → '+stan+(op?'  · '+podstaw(op):''),kl);
+      // migawka PO zastosowaniu akcji — opis „Próba {attempts}/{attempts_max}"
+      // ma pokazywać licznik już zinkrementowany
+      dopisz({typ:'przejscie',z:poprz,cel:stan,i:i,snap:migawka(),kl:kl});
       zastosujAkcje((M.states[stan]||{}).actions);
       if (poprz===stanIdle && stan!==stanIdle) { cyklStart=t; }
       if (poprz!==stanIdle && stan===stanIdle) {
         cyklOstatni = (cyklStart!==null) ? t-cyklStart : null;
         cyklStart=null; cykle++;
-        if (cyklOstatni!==null) loguj(T('log.cycleClosed')+' — '+cyklOstatni.toFixed(1)+' s','s');
+        if (cyklOstatni!==null) dopisz({typ:'cykl',s:cyklOstatni.toFixed(1),kl:'s'});
       }
       if (modelSilnika && !!wyjsciaStanu().starter){
         if (Math.random() < PROG_NIEUDANEJ){
           czasZaskoku = Infinity;
-          loguj(T('log.noCatch'),'m');
+          dopisz({typ:'model',co:'noCatch',kl:'m'});
         } else {
           czasZaskoku = 2.0 + Math.random()*0.8;
-          loguj(T('log.catch')+' '+czasZaskoku.toFixed(1)+' s','m');
+          dopisz({typ:'model',co:'catch',s:czasZaskoku.toFixed(1),kl:'m'});
         }
       }
       break;
@@ -876,7 +1610,7 @@ function rysujWejscia(){
     const p=document.createElement('div');
     p.className='przel'+(w.momentary?' chwil':''); p.dataset.k=k;
     p.onclick=()=>{
-      if(k==='running' && modelSilnika){ modelSilnika=false; loguj(T('log.manual'),'m'); }
+      if(k==='running' && modelSilnika){ modelSilnika=false; dopisz({typ:'model',co:'manual',kl:'m'}); }
       we[k]=!we[k]; logujZmianyWe(); filtrKrok(0); logujZmianyFiltr(); odswiez(); };
     d.appendChild(p); c.appendChild(d);
     const f=d.querySelector('.filtr'); if(f) cacheFiltr[k]=f;
@@ -888,12 +1622,14 @@ function rysujWejscia(){
   const mp=document.createElement('div');
   mp.className='przel'+(modelSilnika?' on':''); mp.id='przelModel';
   mp.onclick=()=>{ modelSilnika=!modelSilnika;
-    loguj(modelSilnika?T('log.modelOn'):T('log.modelOff'),'m');
+    dopisz({typ:'model',co:modelSilnika?'modelOn':'modelOff',kl:'m'});
     rysujWejscia(); odswiez(); };
   m.appendChild(mp); c.appendChild(m);
 }
 function rysujSvg(){
-  const S=M.states, W=160, H=56, MAR=26;
+  const S=stanyRys(), szk=(warstwa!=='AGR');
+  if(!S || !Object.keys(S).length) { document.getElementById('svg').innerHTML=''; return; }
+  const W=160, H=56, MAR=26;
   let minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
   for(const k in S){
     minX=Math.min(minX,S[k].x); minY=Math.min(minY,S[k].y);
@@ -922,30 +1658,40 @@ function rysujSvg(){
       const d1=kraw(ux,uy), d2=d1;
       const px1=x1+ux*d1, py1=y1+uy*d1;
       const px2=x2-ux*d2, py2=y2-uy*d2;
-      const akt=(k===stan), ok=akt&&gotowe(p);
+      const akt = szk ? (k===wybSzk) : (k===stan);
+      const ok  = szk ? false : (akt&&gotowe(p));
       // łuk: wygięcie w lewo względem kierunku jazdy — rozdziela pary tam i z powrotem
       const lx=px2-px1, ly=py2-py1, LL=Math.hypot(lx,ly)||1;
       const nx=-ly/LL, ny=lx/LL;
       const wyg=Math.min(LL*0.18, 52);
       const cx=(px1+px2)/2+nx*wyg, cy=(py1+py2)/2+ny*wyg;
-      const op=opisPrzejscia(k,i,p);
+      const op = szk ? (p.description||'') : opisPrzejscia(k,i,p);
+      const tre = szk ? op : podstaw(op);
       g+='<path d="M '+px1+' '+py1+' Q '+cx+' '+cy+' '+px2+' '+py2+'" fill="none" '+
          'stroke="'+(ok?'#4fb477':(akt?'#7BAFD4':'#3a4a5c'))+'" stroke-width="'+(akt?2.2:1.3)+'" '+
          'marker-end="url(#'+(ok?'grA':'gr')+')" opacity="'+(akt?1:.5)+'">'+
-         '<title>'+esc(k+' → '+p.to+(op?'\n'+podstaw(op):'')+(p.when?'\n'+T('word.when')+': '+p.when:'')+
+         '<title>'+esc(k+' → '+p.to+(tre?'\n'+tre:'')+(p.when!==undefined?'\n'+T('word.when')+': '+p.when:'')+
          (p.after!==undefined?'\n'+T('word.after')+': '+p.after:''))+'</title></path>';
     }
   }
-  // węzły
+  // węzły. W szkielecie podświetlony jest WYBRANY stan (niebiesko), a nie bieżący —
+  // szkielet nie ma stanu bieżącego, bo nic w nim nie jest symulowane.
   for(const k in S){
-    const s=S[k], akt=(k===stan);
-    const kol = akt ? (jestAwaria(k)?'#e05c4b':'#F7A800') : '#2b3a49';
-    const txt = akt ? (jestAwaria(k)?'#2a0d08':'#2a1d00') : '#cfe0ee';
-    g+='<g><rect x="'+s.x+'" y="'+s.y+'" width="'+W+'" height="'+H+'" rx="10" '+
-       'fill="'+kol+'" stroke="'+(akt?kol:'#3a4a5c')+'" stroke-width="'+(akt?2.5:1.3)+'"/>'+
+    const s=S[k];
+    const akt = szk ? (k===wybSzk) : (k===stan);
+    const awa = szk ? !!S[k].fault : jestAwaria(k);
+    let kol='#2b3a49', txt='#cfe0ee';
+    if(akt){
+      if(szk){ kol='#7BAFD4'; txt='#0d1922'; }
+      else { kol = awa?'#e05c4b':'#F7A800'; txt = awa?'#2a0d08':'#2a1d00'; }
+    } else if(szk && awa){ kol='#33242a'; }
+    const opis = szk ? (S[k].description||'') : (podstaw(opisStanu(k))||k);
+    const klik = szk ? ' style="cursor:pointer" onclick="wybierzSzk(\''+k+'\')"' : '';
+    g+='<g'+klik+'><rect x="'+s.x+'" y="'+s.y+'" width="'+W+'" height="'+H+'" rx="10" '+
+       'fill="'+kol+'" stroke="'+(akt?kol:(szk&&awa?'#6b3b33':'#3a4a5c'))+'" stroke-width="'+(akt?2.5:1.3)+'"/>'+
        '<text x="'+(s.x+W/2)+'" y="'+(s.y+H/2+5)+'" text-anchor="middle" '+
-       'font-family="ui-monospace,monospace" font-size="14" font-weight="700" fill="'+txt+'">'+k+'</text>'+
-       '<title>'+esc(podstaw(opisStanu(k))||k)+'</title></g>';
+       'font-family="ui-monospace,monospace" font-size="13" font-weight="700" fill="'+txt+'">'+k+'</text>'+
+       '<title>'+esc(opis||k)+'</title></g>';
   }
   svg.innerHTML=g;
 }
@@ -1017,6 +1763,13 @@ function odswiez(){
   for(const k in lic) if(cacheLic[k]) cacheLic[k].textContent=lic[k];
   cacheLic.__czas.textContent=wStanie.toFixed(1)+' s';
 
+  if(warstwa!=='AGR'){
+    // szkielet: kolumny wejść/wyjść/dziennika nadal pokazują ŻYWY agregat,
+    // bo on się nie zatrzymał. Zmienia się wyłącznie diagram i kolumna stanu.
+    const sig='SZK|'+warstwa+'|'+wybSzk;
+    if(sig!==ostatniSvg){ rysujSvg(); ostatniSvg=sig; }
+    return;
+  }
   if(stan!==ostatniStan){
     document.getElementById('stanNazwa').textContent=stan;
     document.getElementById('stanOpis').textContent=podstaw(opisStanu(stan));
@@ -1025,7 +1778,8 @@ function odswiez(){
   }
   let podpis='';
   document.querySelectorAll('#przejscia .przej').forEach(e=>{
-    const p=e._p, ok=gotowe(p); podpis+=ok?'1':'0';
+    const p=e._p; if(!p) return;
+    const ok=gotowe(p); podpis+=ok?'1':'0';
     e.classList.toggle('gotowe', ok);
     const z=e.querySelector('.zegar-p');
     if(z){ const lim=(typeof p.after==='string')?(M.parameters||{})[p.after]:p.after;
@@ -1051,6 +1805,9 @@ document.getElementById('tempo').onchange=()=>{ if(gra){ustawGre(false);ustawGre
 document.querySelectorAll('.jezyk button').forEach(b=>{
   b.onclick=()=>ustawJezyk(b.dataset.lang);
 });
+document.querySelectorAll('.warstwy > button').forEach(b=>{
+  b.onclick=()=>ustawWarstwe(b.dataset.w);
+});
 document.getElementById('bZastosuj').onclick=()=>{
   const b=document.getElementById('blad');
   try{ ustawGre(false); zaladuj(document.getElementById('yaml').value);
@@ -1065,6 +1822,9 @@ document.getElementById('bPrzywroc').onclick=()=>{
 (function(){
   try{
     LANG=czytajJezyk();
+    const szkEl=document.getElementById('skeletonYaml');
+    if(szkEl){ try{ SZK=jsyaml.load(szkEl.textContent); }catch(e){ SZK=null;
+      console.warn('szkielet hybrydy nie wczytany:', e.message); } }
     zrodloOryg=document.getElementById('defaultYaml').textContent.trim();
     document.getElementById('yaml').value=zrodloOryg;
     zaladuj(zrodloOryg);
