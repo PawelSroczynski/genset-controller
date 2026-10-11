@@ -1,0 +1,554 @@
+# =====================================================================
+#  STATE SKELETON — PYROLYSIS RETORT + CHARCOAL GASIFIER (WATER GAS)
+#
+#  mode: SKELETON. The outputs have NO pins assigned, nothing here drives
+#  hardware, and none of it may be flashed to a controller. The file records
+#  the split into layers, the sequences and the interlocks — for review and
+#  correction on paper, before the machines have signals.
+#
+#  TWO MACHINES, NOT ONE TABLE. The genset (AGR_, in state-machine.yaml) is
+#  untouched. Two parallel layers are added here, and the joint between them
+#  is a SINGLE SIGNAL each way, not shared transitions. Folding everything
+#  into one table would multiply out to 6 x 10 x 9 combinations and the table
+#  would be unreadable at the first bug.
+# =====================================================================
+
+mode: skeleton
+name: Hybrid — pyrolysis retort and water-gas gasifier
+
+layers:
+  AGR_: genset FOGO FH9000R — finished, in state-machine.yaml
+  GAZ_: gasifier ThriveOffgrid CXF CrossFire — water gas from charcoal
+  RET_: pyrolysis retort — charcoal from wood, batch process
+
+# =====================================================================
+#  THE JOINT BETWEEN LAYERS — this is the whole integration
+# =====================================================================
+#
+#  GAZ_ -> AGR_   one signal: `gas_ready`
+#                 The AGR_READY exit condition widens from `gen_request`
+#                 to `gen_request and gas_ready`.
+#                 THAT IS THE ONLY CHANGE TO THE GENSET MACHINE. Nothing else.
+#
+#  AGR_ -> GAZ_   one signal: `engine_drawing`  (AGR_ is in AGR_RUNNING)
+#                 The gasifier needs it: without the engine drawing, gas does
+#                 not flow, the reactor idles and the bed cools down.
+#
+#  RET_ -> GAZ_   NO REAL-TIME SIGNAL AT ALL.
+#                 The retort and the gasifier are coupled by INVENTORY, not by
+#                 a signal: the retort makes charcoal, the charcoal seasons in
+#                 the open for 8 days, then goes to the store, and the gasifier
+#                 draws from the store. The timescale is days, not seconds.
+#                 Wiring them with a state transition would be invented.
+#                 The only thing that crosses: store level as a COUNTER in kg,
+#                 never as a machine state.
+#
+#  SHARED, ABOVE THE LAYERS — these feed all three
+#                 `co_alarm`     carbon monoxide alarm in the plant room
+#                 `t_pile`       temperature inside the charcoal pile
+#                 `t_buffer_top` top-zone temperature of the 4 m3 buffer
+#                 None of these belongs to any layer. They are the background
+#                 all three machines operate in.
+
+# =====================================================================
+#  PARAMETERS — TBD means the number does not exist yet, and where it must
+#  come from
+# =====================================================================
+parameters:
+  # --- gasifier ---
+  t_bed_min:          TBD   # degC — water-gas reaction threshold; below it the
+                            # steam only cools the bed and the product is CO2
+                            # with unreacted water. The literature on charcoal
+                            # beds quotes 700-900 degC.
+                            # SOURCE: a thermocouple in the CXF, not a paper.
+  t_warmup_max:       TBD   # s — warm-up limit; past it, fault rather than wait
+  t_flare_min:        TBD   # s — how long the gas must burn steadily before it
+                            # may be considered fit for the engine
+  t_purge:            TBD   # s — purge of the reactor-to-mixer run before the
+                            # engine valve opens; clears air out of that section
+  kg_per_kwh:         0.82  # kg charcoal/kWh — from the CXF sheet, range 0.78-0.85
+  l_water_per_kg:     1.0   # l water/kg charcoal — vendor figure; it lands
+                            # exactly on the autothermal limit (956 g)
+  hopper_kg:          5     # kg — CXF hopper, about 1.8 h of running
+
+  # --- retort ---
+  t_devol_min:        TBD   # degC — threshold above which the pyrolysis gas
+                            # burns by itself and external firing can stop
+  t_discharge_max:    TBD   # degC — below this the retort may be opened. It must
+                            # follow from safety, not from impatience: hot char
+                            # ignites the moment it meets air.
+  t_cooldown_min:     TBD   # s — minimum time sealed, REGARDLESS of what the
+                            # thermocouple reads. The probe measures one point;
+                            # a 200 kg charge has a gradient.
+  d_seasoning:        8     # days — exposure to air in a thin layer. After 8 days
+                            # char is no longer treated as self-igniting.
+                            # This is a CALENDAR state — the only one in the
+                            # whole installation.
+
+  # --- buffer, shared ---
+  t_buffer_set:       70    # degC — working setpoint
+  t_buffer_cutoff:    78    # degC — cutoff. Above 82 degC the EPDM membrane
+                            # softens. The 4 K margin is not caution, it is
+                            # 4000 l of near-boiling water in a room full of
+                            # electronics.
+
+counters:
+  store_kg:    0   # charcoal fit for use, seasoning complete
+  season_kg:   0   # charcoal still seasoning, not yet permitted as fuel
+  batch_no:    0   # retort batch number
+  gas_attempts: 0
+
+# =====================================================================
+#  INPUTS — THESE SIGNALS DO NOT EXIST YET. This is a list to collect.
+# =====================================================================
+inputs:
+  # --- gasifier ---
+  t_bed:
+    type: analogue
+    label: Bed temperature
+    description: >-
+      Type-K thermocouple in the reduction zone. The single most important
+      measurement in the GAZ_ layer — it decides when steam may be injected
+      and when the gas is fit for the engine.
+    missing: Whether the CXF already has a thermocouple port, or it must be drilled.
+  hopper_low:
+    type: binary
+    label: Charcoal hopper low
+    description: Level switch in the 5 kg hopper. ON = refill.
+    missing: Whether the CXF has such a switch.
+  water_ok:
+    type: binary
+    label: Cracking water present
+    description: >-
+      Level in the water tank. Running out of water with a hot bed is not
+      a standstill — it is a bed burning in clean air, without the endothermic
+      reaction that was cooling it.
+  flare_flame:
+    type: binary
+    label: Flame at the flare
+    description: >-
+      Flame detector (ionisation or UV) at the flare outlet. The only direct
+      evidence that the gas is combustible rather than nitrogen and CO2.
+  engine_valve_fb:
+    type: output_feedback
+    label: Engine gas valve position feedback
+    description: Limit switch on the valve. Position must be read, not assumed.
+
+  # --- retort ---
+  t_retort:
+    type: analogue
+    label: Charge temperature
+    description: Thermocouple in the core of the charge. One point — see t_cooldown_min.
+  hatches_closed:
+    type: binary
+    label: Retort hatches closed
+    description: >-
+      Limit switches on the charging and discharge hatches, in series.
+      Pyrolysis with a hatch open is combustion of the charge, not carbonisation.
+  afterburner_flame:
+    type: binary
+    label: Flame in the pyrolysis gas afterburner
+    description: >-
+      Pyrolysis gas is tar-laden and MUST NOT be fed to the engine. It goes to
+      the afterburner and its heat to the buffer. Flame loss while devolatilising
+      means tar and CO are venting into the room instead of up the stack.
+
+  # --- shared ---
+  co_alarm:
+    type: binary
+    label: CO alarm
+    description: >-
+      The same detector that already feeds IN-02 of the genset.
+      !! A DELIBERATE GAP: a CO detector does not see hydrogen. Water gas is
+      close to 28 % H2, and hydrogen rises to the ceiling. Ventilation from the
+      highest point of the room is the safeguard here, not the detector.
+  t_pile:
+    type: analogue
+    label: Temperature inside the charcoal pile
+    description: >-
+      The only early warning of char self-ignition. It belongs to no machine —
+      a pile heats itself with nobody's involvement. A rising trend means rake
+      the pile out. This is not extinguished with water.
+  t_buffer_top:
+    type: analogue
+    label: Buffer top-zone temperature
+    description: Cuts heat recovery before the EPDM membrane has to work at 80 degC.
+
+# =====================================================================
+#  OUTPUTS — NO PINS. A list of intent, not a configuration.
+# =====================================================================
+outputs:
+  blower:
+    pin: TBD
+    label: Primary air blower
+    description: Air to the oxidation zone. That is what powers the endothermic reaction.
+  steam_injection:
+    pin: TBD
+    label: Steam injection
+    description: >-
+      HARD INTERLOCK: only while t_bed > t_bed_min and water_ok.
+      Steam onto a cold bed is lost heat and gas with no calorific value.
+  flare_valve:
+    pin: TBD
+    label: Valve to the flare
+    description: The gas path to open air. Default state OPEN — the gas must have a way out.
+  engine_gas_valve:
+    pin: TBD
+    label: Gas valve to the engine
+    description: >-
+      Opening is permitted only from GAZ_READY, after the purge.
+      Default state CLOSED. Loss of power must close it by itself —
+      a spring-return valve, not a bistable one.
+  buffer_pump:
+    pin: TBD
+    label: Heat recovery circulation pump to the buffer
+  dump_radiator:
+    pin: TBD
+    label: Three-way valve to the dump radiator
+    description: >-
+      Above t_buffer_cutoff the heat goes to air. A lit retort batch CANNOT BE
+      STOPPED — 200 kg of charge releases about 1000 kWh and the buffer holds
+      209 kWh. The dump radiator is not a safeguard against a fault, it is part
+      of normal operation.
+  ignition_burner:
+    pin: TBD
+    label: Retort ignition burner
+    description: External heat source until devolatilisation is self-sustaining.
+  afterburner_valve:
+    pin: TBD
+    label: Pyrolysis gas valve to the afterburner
+
+# =====================================================================
+#  LAYER GAZ_ — GASIFIER
+# =====================================================================
+states_gas:
+  GAZ_COLD:
+    description: >-
+      Reactor cold, bed may or may not be loaded. Engine valve closed, flare
+      open. The resting state — and the one everything returns to.
+    outputs: { blower: false, steam_injection: false, flare_valve: true, engine_gas_valve: false }
+    signals: { gas_ready: false }
+    transitions:
+      - to: GAZ_LIGHTING
+        when: gas_demand and store_kg > 0 and not co_alarm
+        description: Run requested, charcoal in the store
+
+  GAZ_LIGHTING:
+    description: >-
+      Lighting the bed. OPEN QUESTION: does the CXF have electric bed ignition,
+      or is it lit by hand only. If by hand, this is NOT a controller state —
+      it is a human state, and the controller merely waits on t_bed with
+      nothing here to energise.
+    outputs: { blower: true, steam_injection: false, flare_valve: true, engine_gas_valve: false }
+    signals: { gas_ready: false }
+    transitions:
+      - to: GAZ_FAULT
+        when: co_alarm
+      - to: GAZ_WARMUP
+        when: t_bed > 300
+        description: Bed has caught — it climbs on its own from here
+
+  GAZ_WARMUP:
+    description: >-
+      The bed climbs to reaction temperature. NO STEAM YET — this phase is
+      purely exothermic, air onto charcoal. The gas is weak, goes to the flare
+      and is not treated as combustible.
+    outputs: { blower: true, steam_injection: false, flare_valve: true, engine_gas_valve: false }
+    signals: { gas_ready: false }
+    transitions:
+      - to: GAZ_FAULT
+        when: co_alarm
+      - to: GAZ_FAULT
+        after: t_warmup_max
+        description: Bed failed to reach temperature within the limit — wet charcoal or a draught
+      - to: GAZ_FLARE
+        when: t_bed > t_bed_min and water_ok
+        description: Reaction temperature reached and water present — steam may be injected
+
+  GAZ_FLARE:
+    description: >-
+      Full water-gas reaction, steam injected, but the gas STILL GOES TO THE
+      FLARE. This is the evidential state: the flame at the flare is the only
+      direct proof that the pipe carries combustible gas rather than nitrogen
+      and CO2. Only after t_flare_min of steady flame may the gas be considered
+      fit for the engine. It is also the only place where air leaves the line.
+    outputs: { blower: true, steam_injection: true, flare_valve: true, engine_gas_valve: false }
+    signals: { gas_ready: false }
+    transitions:
+      - to: GAZ_FAULT
+        when: co_alarm
+      - to: GAZ_WARMUP
+        when: t_bed < t_bed_min
+        description: Bed quenched by the injection — steam OFF, reheat
+      - to: GAZ_FAULT
+        when: not water_ok
+        description: No water with a hot bed — the charcoal burns without the cracking reaction
+      - to: GAZ_READY
+        when: flare_flame
+        after: t_flare_min
+        description: Flame steady for {t_flare_min} s — gas accepted
+
+  GAZ_READY:
+    description: >-
+      THIS IS THE JOINT. The only state that raises the `gas_ready` signal read
+      by the AGR_ layer. The reactor makes gas to the flare and waits. The
+      genset may start, or may not. The engine valve is still closed — it opens
+      only after the purge, once the genset reports that it is drawing.
+    outputs: { blower: true, steam_injection: true, flare_valve: true, engine_gas_valve: false }
+    signals: { gas_ready: true }
+    transitions:
+      - to: GAZ_FAULT
+        when: co_alarm
+      - to: GAZ_FLARE
+        when: not flare_flame or t_bed < t_bed_min
+        description: Gas quality lost — the ready signal is withdrawn
+      - to: GAZ_PURGE
+        when: engine_drawing
+        description: Genset confirmed running — purge the run to the mixer
+      - to: GAZ_SHUTDOWN
+        when: not gas_demand
+        description: Demand withdrawn without the engine ever starting
+
+  GAZ_PURGE:
+    description: >-
+      The reactor-to-mixer run is full of air. Before the engine valve opens,
+      that run must be filled with gas. A separate state, because it is a
+      separate hazard: hydrogen mixed with air in a closed pipe has a wide
+      explosive range.
+    outputs: { blower: true, steam_injection: true, flare_valve: true, engine_gas_valve: false }
+    signals: { gas_ready: true }
+    transitions:
+      - to: GAZ_FAULT
+        when: co_alarm
+      - to: GAZ_SUPPLYING
+        after: t_purge
+        when: engine_drawing
+        description: Line purged — engine valve opens
+      - to: GAZ_READY
+        when: not engine_drawing
+        description: Engine stopped drawing mid-purge
+
+  GAZ_SUPPLYING:
+    description: >-
+      Gas flows to the engine. The flare stays OPEN — the gas must keep a way
+      out even if the engine suddenly stops drawing. Closing both paths on a
+      hot reactor is pressure rise in a closed vessel.
+    outputs: { blower: true, steam_injection: true, flare_valve: true, engine_gas_valve: true }
+    signals: { gas_ready: true }
+    transitions:
+      - to: GAZ_FAULT
+        when: co_alarm
+      - to: GAZ_READY
+        when: not engine_drawing
+        description: Engine stopped — engine valve closes, gas returns to the flare
+      - to: GAZ_SHUTDOWN
+        when: not gas_demand
+        description: End of cycle
+
+  GAZ_SHUTDOWN:
+    description: >-
+      UNRESOLVED STATE — TWO PROCEDURES WITH OPPOSITE RISKS. This has to be
+      settled with ThriveOffgrid, because it decides what is left in the room
+      overnight.
+        (a) DRAW DOWN with the engine: run until the bed is spent. The reactor
+            ends up cold and empty, but the engine gets the worst-quality gas
+            at the end and air passes through the reactor.
+        (b) SEAL IT: cut the air and let it die. A hot bed remains, with CO in
+            the reactor. Gas-tightness becomes the safeguard.
+      Not choosing on the vendor's behalf. The skeleton leaves the branch open.
+    outputs: { blower: TBD, steam_injection: false, flare_valve: true, engine_gas_valve: false }
+    signals: { gas_ready: false }
+    transitions:
+      - to: GAZ_COOLDOWN
+        when: TBD
+        description: Depends on the chosen procedure
+
+  GAZ_COOLDOWN:
+    description: >-
+      Reactor hot, not producing. The room needs ventilation — CO is still
+      being formed in this state and there is no longer a flame burning it off.
+    outputs: { blower: false, steam_injection: false, flare_valve: true, engine_gas_valve: false }
+    signals: { gas_ready: false }
+    transitions:
+      - to: GAZ_COLD
+        when: t_bed < 60
+
+  GAZ_FAULT:
+    fault: true
+    description: >-
+      Steam OFF, blower OFF, engine valve CLOSED, flare OPEN. The flare stays
+      open deliberately: in a fault the gas must have a way out to open air,
+      not into the room and not into the engine.
+      Reset only after cooldown — a hot reactor is still a gas source.
+    outputs: { blower: false, steam_injection: false, flare_valve: true, engine_gas_valve: false }
+    signals: { gas_ready: false }
+    transitions:
+      - to: GAZ_COLD
+        when: reset and not co_alarm and t_bed < 60
+
+# =====================================================================
+#  LAYER RET_ — PYROLYSIS RETORT
+#
+#  A CONSTITUTIONAL DIFFERENCE FROM THE OTHER LAYERS:
+#  once lit, a retort CANNOT BE STOPPED. The genset is killed by shorting the
+#  ignition, the gasifier by cutting its air — but 200 kg of charge that has
+#  started devolatilising will run to the end whatever the controller does.
+#  So this layer has no "stopping" state. It has RET_DEVOLATILISING, whose only
+#  exit is the end of the process, and a FAULT state that can do no more than
+#  divert the heat to the dump radiator and call a human.
+#  DESIGN CONSEQUENCE: the decision is made at lighting, not during the run.
+#  The entry conditions must therefore be harder than anywhere else.
+# =====================================================================
+states_retort:
+  RET_COLD:
+    description: Retort cold, empty or holding a finished charge. Hatches may be opened.
+    outputs: { ignition_burner: false, afterburner_valve: false, buffer_pump: false }
+    transitions:
+      - to: RET_CHARGING
+        when: charge_demand
+
+  RET_CHARGING:
+    description: Loading wood. Hatches open. Lighting is interlocked in hardware.
+    outputs: { ignition_burner: false, afterburner_valve: false, buffer_pump: false }
+    transitions:
+      - to: RET_LIGHTING
+        when: hatches_closed and pyrolysis_demand and t_buffer_top < t_buffer_set and not co_alarm
+        actions: { batch_no: "+1" }
+        description: >-
+          Four conditions at once, and that is deliberate. A cold buffer is one
+          of them: a batch releases about 1000 kWh, the buffer holds 209 kWh.
+          Starting with the buffer at 65 degC condemns the whole batch to the
+          dump radiator.
+
+  RET_LIGHTING:
+    description: >-
+      The external burner heats the charge to the self-sustaining threshold.
+      The only state in this layer that can still be called off at no cost.
+    outputs: { ignition_burner: true, afterburner_valve: true, buffer_pump: true }
+    transitions:
+      - to: RET_FAULT
+        when: co_alarm or not hatches_closed
+      - to: RET_COLD
+        when: not pyrolysis_demand
+        description: Called off — the last moment at which this still costs nothing
+      - to: RET_DEVOLATILISING
+        when: t_retort > t_devol_min and afterburner_flame
+        description: Pyrolysis gas burns by itself — the burner can be shut down
+
+  RET_DEVOLATILISING:
+    description: >-
+      Self-sustaining process. Pyrolysis gas to the afterburner, heat to the
+      buffer. THERE IS NO EXIT FROM THIS STATE ON DEMAND. The batch ends when
+      it ends. Flame loss in the afterburner is an immediate fault: tar and CO
+      then go into the room instead of up the stack.
+    outputs: { ignition_burner: false, afterburner_valve: true, buffer_pump: true }
+    transitions:
+      - to: RET_FAULT
+        when: co_alarm or not afterburner_flame or not hatches_closed
+      - to: RET_FINISHING
+        when: TBD
+        description: Gas evolution ceases — end of devolatilisation
+        missing: >-
+          The end criterion. It does not follow from the thermocouple alone.
+          Retort practice relies on the afterburner flame dying out. To be
+          established on the first runs — this condition is a placeholder.
+
+  RET_FINISHING:
+    description: Residual evolution. Heat recovery still worth taking.
+    outputs: { ignition_burner: false, afterburner_valve: true, buffer_pump: true }
+    transitions:
+      - to: RET_FAULT
+        when: co_alarm
+      - to: RET_COOLDOWN
+        when: t_retort < t_devol_min
+
+  RET_COOLDOWN:
+    description: >-
+      THE CHARGE COOLS SEALED INSIDE THE RETORT. Opening a hot retort feeds
+      oxygen to char with an enormous developed surface — it ignites at once.
+      The exit requires BOTH conditions: temperature AND time. Time is there
+      because the thermocouple reads one point, while a 200 kg charge has a
+      gradient and its core stays hot longer than the probe shows.
+    outputs: { ignition_burner: false, afterburner_valve: false, buffer_pump: true }
+    transitions:
+      - to: RET_FAULT
+        when: not hatches_closed
+        description: Attempt to open before time
+      - to: RET_DISCHARGING
+        when: t_retort < t_discharge_max
+        after: t_cooldown_min
+        description: Temperature AND time — both, not either
+
+  RET_DISCHARGING:
+    description: >-
+      Removing the char. It goes out in a THIN LAYER to seasoning, not into
+      bags and not onto the pile. The point is to carry the chemisorption heat
+      away, not to exclude oxygen — hence airy, not sealed.
+    outputs: { ignition_burner: false, afterburner_valve: false, buffer_pump: false }
+    transitions:
+      - to: RET_SEASONING
+        when: discharge_complete
+        actions: { season_kg: "+batch" }
+
+  RET_SEASONING:
+    description: >-
+      A CALENDAR STATE, THE ONLY ONE IN THE WHOLE INSTALLATION. It counts in
+      days, not seconds, and it must survive controller restarts — which means
+      its timestamp MUST live in non-volatile memory. Globals with
+      `restore_value: false`, as in the genset machine, will not do.
+      Fresh char self-ignites through oxygen chemisorption. After 8 days of
+      exposure it is no longer treated as dangerous.
+      The retort may be working on the next batch meanwhile — this layer is
+      REENTRANT at this point and the skeleton does not yet handle that.
+    outputs: { ignition_burner: false, afterburner_valve: false, buffer_pump: false }
+    transitions:
+      - to: RET_FAULT
+        when: t_pile_rising
+        description: Self-heating — rake the layer out. This is not extinguished with water.
+      - to: RET_COLD
+        after: d_seasoning
+        actions: { store_kg: "+season_kg", season_kg: 0 }
+        description: 8 days elapsed — the charcoal may be burned in the gasifier
+
+  RET_FAULT:
+    fault: true
+    description: >-
+      Burner OFF, heat to the dump radiator, call a human.
+      AND THAT IS ALL THIS FAULT STATE CAN DO. If it was entered from
+      RET_DEVOLATILISING the process continues regardless — the controller
+      stops steering it but does not stop it. This is not a flaw in the
+      skeleton, it is a property of batch pyrolysis, and it is why the entry
+      conditions into RET_LIGHTING are as hard as they are.
+    outputs: { ignition_burner: false, afterburner_valve: true, buffer_pump: true, dump_radiator: true }
+    transitions:
+      - to: RET_COLD
+        when: reset and not co_alarm and t_retort < t_discharge_max
+
+# =====================================================================
+#  WHAT THIS SKELETON DOES NOT YET HANDLE — stated openly
+# =====================================================================
+gaps:
+  - >-
+    REENTRANCY OF RET_SEASONING. Seasoning runs for 8 days while the retort can
+    be working the next batch. One state machine cannot be in two states at
+    once. Seasoning should leave the machine and become a COUNTER WITH A DATE
+    (batch plus discharge date), not a state. This is the most serious flaw in
+    this skeleton and it is known.
+  - >-
+    NON-VOLATILE MEMORY. The genset needs no memory across restarts — here
+    `season_kg`, `store_kg` and the batch dates must survive a power cut.
+  - >-
+    THE END-OF-DEVOLATILISATION CRITERION. The condition in RET_DEVOLATILISING
+    is a placeholder, to be established by measurement on the first runs.
+  - >-
+    CXF SHUTDOWN PROCEDURE. The branch is left open deliberately — (a) and (b)
+    carry opposite risks and this is a question for ThriveOffgrid.
+  - >-
+    HYDROGEN. A CO detector does not see H2, and water gas is 28 % H2. The
+    safeguard is gravity ventilation from the highest point of the room, not any
+    sensor listed here. That is a BUILDING requirement, not a programming one,
+    which is why it appears in no transition.
+  - >-
+    THERMAL COUPLING OF TWO SOURCES. The retort and the gasifier can both heat
+    the buffer at once and will overfill it together. Settling the buildings'
+    heat demand is a precondition for designing any priority between them.

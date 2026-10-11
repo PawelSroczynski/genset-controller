@@ -1,0 +1,1080 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Genset controller simulator</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%231A2332'/><text x='16' y='23' text-anchor='middle' font-family='sans-serif' font-size='18' font-weight='700' fill='%23F7A800'>⚙</text></svg>">
+<script src="https://cdn.jsdelivr.net/npm/js-yaml@4.1.0/dist/js-yaml.min.js"></script>
+<script id="defaultYaml" type="text/yaml">
+name: Genset controller FOGO FH9000R — SMARTBOB SM-MINI-0808R
+description: >
+  Models the GENSET ONLY. Reads the Deye G-start dry contact, cranks with an
+  attempt limit, stops the engine by shorting the ignition to ground once the
+  signal drops. No gasifier here — no blower, no gas valve, no bed state.
+  A cycle opens on the Deye signal and closes on the return to ready.
+
+  NAMING CONVENTION: states in this layer carry the AGR_ prefix (aggregate).
+  Further layers get their own: GAZ_ for the gasifier, RET_ for the retort.
+  Without it AGR_RUNNING and GAZ_RUNNING would collide once the machines
+  stand side by side — a running engine and a reactor producing gas are not
+  the same state.
+
+genset:
+  model: FOGO FH9000R
+  datasheet: https://www.fogo.pl/fh-9000-r
+  engine: Honda GX390
+  note: >-
+    8.5 kVA, 400/230 V three-phase, AVR on all three phases. The electric
+    starter, the relay start input and the battery are retrofits — the vendor
+    page does not list them, which is why the start signal has to be wired
+    rather than requested over a bus.
+
+controller:
+  model: SMARTBOB SM-MINI-0808R
+  datasheet: https://smartbob.pl/produkt/sm-mini-0808r/
+  documentation: https://smartbobautomatyka.github.io/SmartbobPageWiki/
+  templates: https://github.com/SmartbobAutomatyka/SmartbobAutomatyka-GIT/tree/main/ESPHOME/SM-MINI-0808R-V17
+  pinout: https://docs.google.com/spreadsheets/d/1f-NrrFuqd2Pu4SJJxyYbYXiO_AjEefHKa8IfUKU8CmM/edit?gid=1302523101
+
+parameters:
+  # The Deye request must be continuously ON for this long before the logic
+  # accepts it. It lives in the INPUT FILTER, not in a state: holding a signal
+  # is signal conditioning, and a state timer cannot express it — a state timer
+  # measures time in the state, which has already elapsed while the controller
+  # sat idle. Same thing as `delayed_on` on the ESPHome binary_sensor.
+  t_request_hold: 5      # s
+  # Minimum dwell in AGR_READY after a closed cycle or a fault reset, so the
+  # controller never cranks again the instant the engine has stopped.
+  # This one is correctly measured as time in the state.
+  t_ready: 5             # s
+  t_crank: 3             # s — maximum duration of a single cranking attempt
+  t_pause: 10            # s — starter rest between attempts
+  attempts_max: 3
+  t_rundown: 10          # s — time allowed for the engine to come to a stop
+
+counters:
+  attempts: 0
+
+inputs:
+  gen_request:
+    pin: IN-01
+    label: Deye start signal
+    description: >-
+      G-start dry contact, inverter terminals 1 and 2.
+      ON = genset run requested. OFF = no request.
+      The logic sees this input only after it has been held for
+      {t_request_hold} s; dropping it is immediate. Asymmetric on purpose —
+      a transient request must not start the engine, but a withdrawn request
+      must stop the cranking at once.
+    hold: t_request_hold
+  running:
+    pin: IN-02
+    label: Run confirmed
+    description: >-
+      External DIN-rail voltage monitoring relay wired to the genset output
+      phase. Its dry contact feeds IN-02.
+      ON = voltage within the working window, i.e. the genset is producing.
+    device:
+      name: e.g. Relpol RPN-.VF-A400
+      url: https://www.relpol.pl/Produkty/Przekazniki-nadzorcze/Przekazniki-nadzorcze-modulowe/Przekazniki-nadzorcze-RPN-.VF-A400
+  co_alarm:
+    pin: IN-03
+    label: CO alarm
+    description: >-
+      Alarm contact of the carbon monoxide detector in the plant room, on IN-03.
+      ON = carbon monoxide detected. The detector needs a second contact for
+      the hardwired permit chain, which stops the engine independently of
+      the controller.
+  reset:
+    pin: IN-04
+    label: Fault reset
+    description: >-
+      Momentary pushbutton in the cabinet door, on IN-04.
+      ON = pressed. Returns to OFF on release.
+    momentary: true
+
+outputs:
+  ignition:
+    pin: RELAY-01
+    label: Ignition relay
+    description: >-
+      ON = the NC contact in the kill line is open, ignition circuit live.
+      OFF = ignition shorted to ground, engine stopped.
+  starter:
+    pin: RELAY-02
+    label: Starter relay
+    description: >-
+      Drives the starter contactor coil; it does not feed the starter directly.
+      ON = contactor closed, starter cranking. OFF = contactor open.
+
+states:
+  AGR_READY:
+    x: 70
+    y: 40
+    description: >-
+      Controller powered, outputs in the safe state. Kill line shorted to
+      ground. Two independent conditions gate the start, on two different
+      clocks: the request must have been held {t_request_hold} s (input filter)
+      AND the controller must have been in this state {t_ready} s (state timer).
+      The second one matters only right after a cycle or a fault reset; once
+      the controller has stood idle it is long satisfied, and that is correct —
+      a rested engine needs no dwell. The `not running` term blocks the start
+      if the engine is somehow still turning.
+    outputs: { ignition: false, starter: false }
+    actions: { attempts: 0 }
+    transitions:
+      - to: AGR_CRANKING
+        when: gen_request and not co_alarm and not running
+        after: t_ready
+        description: Request held {t_request_hold} s and ready dwell {t_ready} s elapsed — crank
+
+  AGR_CRANKING:
+    x: 300
+    y: 40
+    description: Starter engaged. The time limit protects the bendix.
+    outputs: { ignition: true, starter: true }
+    transitions:
+      - to: AGR_FAULT
+        when: co_alarm
+        description: CO alarm during cranking
+      - to: AGR_STOPPING
+        when: not gen_request
+        description: Deye signal lost while cranking
+      - to: AGR_RUNNING
+        when: running
+        description: Run confirmed
+      - to: AGR_FAULT
+        after: t_crank
+        when: attempts >= attempts_max - 1
+        actions: { attempts: "+1" }
+        description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_crank} s — attempt limit exhausted"
+      - to: AGR_PAUSE
+        after: t_crank
+        actions: { attempts: "+1" }
+        description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_crank} s — {t_pause} s pause"
+
+  AGR_RUNNING:
+    x: 530
+    y: 40
+    description: Engine running, inverter charging the bank.
+    outputs: { ignition: true, starter: false }
+    transitions:
+      - to: AGR_FAULT
+        when: co_alarm
+        description: CO alarm with the engine running
+      - to: AGR_FAULT
+        when: not running
+        description: Run confirmation lost without a stop command — cause outside the controller
+      - to: AGR_STOPPING
+        when: not gen_request
+        description: Deye signal lost
+
+  AGR_FAULT:
+    x: 70
+    y: 170
+    fault: true
+    description: >-
+      Ignition relay OFF. Requires a manual reset. Resetting is blocked while
+      run confirmation persists — that would mean a defective kill circuit.
+    outputs: { ignition: false, starter: false }
+    transitions:
+      - to: AGR_READY
+        when: reset and not co_alarm and not running
+        description: Fault reset
+
+  AGR_PAUSE:
+    x: 300
+    y: 170
+    description: Starter thermal rest before the next attempt.
+    outputs: { ignition: true, starter: false }
+    transitions:
+      - to: AGR_FAULT
+        when: co_alarm
+        description: CO alarm between attempts
+      - to: AGR_RUNNING
+        when: running
+        description: Run confirmed with the starter OFF
+      - to: AGR_READY
+        when: not gen_request
+        description: Deye signal lost between attempts — cycle aborted
+      - to: AGR_CRANKING
+        after: t_pause
+        description: "{t_pause} s pause elapsed — next attempt"
+
+  AGR_STOPPING:
+    x: 530
+    y: 170
+    description: Ignition relay OFF — the NC contact shorts the ignition to ground.
+    outputs: { ignition: false, starter: false }
+    transitions:
+      - to: AGR_READY
+        when: not running
+        description: Run confirmation lost
+      - to: AGR_FAULT
+        after: t_rundown
+        description: "Run confirmation held {t_rundown} s after the ignition was shorted — kill circuit defective"
+</script>
+<script id="i18n">
+// =====================================================================
+//  WARSTWA TŁUMACZEŃ
+//
+//  Kanonicznym źródłem jest state-machine.yaml — wyłącznie po angielsku.
+//  Tłumaczenie jest kluczowane ŚCIEŻKĄ W STRUKTURZE, nie dopasowaniem tekstu.
+//  Dopasowanie tekstem rozsypałoby się na interpolacji {t_crank} i na
+//  zawijaniu wierszy przez YAML-a. Brak klucza = tekst angielski z YAML-a,
+//  więc po edycji definicji w okienku nic nie przestaje działać.
+//
+//  Identyfikatory stanów (AGR_READY…) zostają angielskie w obu językach.
+//  To nazwy encji w ESPHome i tematów MQTT — pokazywanie ich w tłumaczeniu
+//  utrudniałoby diagnostykę przy porównywaniu z logiem sterownika.
+// =====================================================================
+const I18N = {
+  en: {
+    ui: {
+      'title':            'Genset controller simulator',
+      'cycle':            'cycle',
+      'cycles':           'cycles',
+      'cycle.idle':       'no request from Deye',
+      'cycle.open':       'running',
+      'cycle.closed':     'closed',
+      'tempo.title':      'Preview speed-up — does not affect the machine thresholds',
+      'btn.reset':        '\u21ba Restart',
+      'btn.close':        '\u2715 Close',
+      'btn.apply':        'Apply',
+      'btn.restore':      'Restore original',
+      'link.documentation':'documentation',
+      'link.templates':   'ESPHome templates',
+      'link.pinout':      'pin mapping',
+      'link.config':      'configuration',
+      'link.github':      'repository on GitHub',
+      'card.inputs':      'Inputs',
+      'card.outputs':     'Outputs and counters',
+      'card.state':       'Current state',
+      'card.log':         'Event log',
+      'modal.title':      'State machine definition',
+      'log.reset':        '\u2014 simulation reset \u2014',
+      'log.cycleClosed':  'cycle closed',
+      'log.filter':       '[filter]',
+      'log.noCatch':      '[model] no run confirmation on this attempt',
+      'log.catch':        '[model] run confirmed after',
+      'log.manual':       '[model] OFF \u2014 manual override',
+      'log.modelOn':      '[model] ON',
+      'log.modelOff':     '[model] OFF \u2014 manual control',
+      'model.label':      'Engine model',
+      'model.description':'Simulation layer. Generates the run confirmation and its loss in place of a physical engine.',
+      'counter.time':     'time in state',
+      'word.after':       'after',
+      'word.when':        'when',
+      'word.hold':        'hold',
+      'word.datasheet':   'datasheet',
+      'err.yaml':         'YAML error:',
+      'err.load':         'Failed to load definition:',
+      'err.noStates':     'Missing "states" section'
+    },
+    yaml: {}
+  },
+  pl: {
+    ui: {
+      'title':            'Symulator sterownika agregatu',
+      'cycle':            'cykl',
+      'cycles':           'cykli',
+      'cycle.idle':       'brak żądania z Deye',
+      'cycle.open':       'w toku',
+      'cycle.closed':     'zamknięty',
+      'tempo.title':      'Przyspieszenie podglądu — nie wpływa na progi maszyny',
+      'btn.reset':        '↺ Od nowa',
+      'btn.close':        '✕ Zamknij',
+      'btn.apply':        'Zastosuj',
+      'btn.restore':      'Przywróć oryginał',
+      'link.documentation':'dokumentacja',
+      'link.templates':   'szablony ESPHome',
+      'link.pinout':      'mapowanie pinów',
+      'link.config':      'konfiguracja',
+      'link.github':      'repozytorium na GitHubie',
+      'card.inputs':      'Wejścia',
+      'card.outputs':     'Wyjścia i liczniki',
+      'card.state':       'Stan bieżący',
+      'card.log':         'Dziennik zdarzeń',
+      'modal.title':      'Definicja maszyny stanów',
+      'log.reset':        '— reset symulacji —',
+      'log.cycleClosed':  'cykl zamknięty',
+      'log.filter':       '[filtr]',
+      'log.noCatch':      '[model] brak potwierdzenia pracy w tej próbie',
+      'log.catch':        '[model] potwierdzenie pracy po',
+      'log.manual':       '[model] OFF — przejęcie ręczne',
+      'log.modelOn':      '[model] ON',
+      'log.modelOff':     '[model] OFF — sterowanie ręczne',
+      'model.label':      'Model silnika',
+      'model.description':'Warstwa symulacji. Generuje potwierdzenie pracy i jego zanik zamiast fizycznego silnika.',
+      'counter.time':     'czas w stanie',
+      'word.after':       'po',
+      'word.when':        'gdy',
+      'word.hold':        'przytrzymanie',
+      'word.datasheet':   'karta katalogowa',
+      'err.yaml':         'Błąd YAML:',
+      'err.load':         'Błąd wczytywania definicji:',
+      'err.noStates':     'Brak sekcji "states"'
+    },
+    yaml: {
+      'description':
+        'Modeluje WYŁĄCZNIE agregat. Odczyt styku G-start z Deye, rozruch z limitem prób, gaszenie przez zwarcie zapłonu do masy po zaniku sygnału. Zgazowywacza tu nie ma — ani dmuchawy, ani zaworu gazu, ani stanu złoża. Cykl zaczyna sygnał z Deye, kończy powrót do gotowości.\n\nKONWENCJA NAZW: stany tej warstwy mają prefiks AGR_ (agregat). Kolejne warstwy dostaną własne: GAZ_ dla gazogeneratora, RET_ dla retorty. Bez tego AGR_RUNNING i GAZ_RUNNING zderzyłyby się, gdy maszyny staną obok siebie — pracujący silnik i reaktor w produkcji gazu to nie ten sam stan.',
+
+      'inputs.gen_request.label': 'Sygnał startowy z Deye',
+      'inputs.gen_request.description':
+        'Styk bezpotencjałowy G-start, zaciski 1,2 falownika. ON = żądanie pracy agregatu. OFF = brak żądania. Logika widzi to wejście dopiero po przytrzymaniu {t_request_hold} s; zanik działa natychmiast. Asymetria jest celowa — chwilowe żądanie nie może odpalić silnika, ale wycofane żądanie musi natychmiast przerwać kręcenie.',
+      'inputs.running.label': 'Praca potwierdzona',
+      'inputs.running.description':
+        'Zewnętrzny przekaźnik nadzoru napięcia na szynie DIN, wpięty na fazę wyjścia agregatu. Jego styk bezpotencjałowy wchodzi na IN-02. ON = napięcie w oknie roboczym, czyli agregat produkuje.',
+      'inputs.running.device.name': 'np. Relpol RPN-.VF-A400',
+      'inputs.co_alarm.label': 'Alarm CO',
+      'inputs.co_alarm.description':
+        'Styk alarmowy czujnika tlenku węgla w maszynowni, podany na IN-03. ON = wykryty tlenek węgla. Czujnik potrzebuje drugiego styku — do sprzętowego łańcucha zezwolenia, który gasi silnik niezależnie od sterownika.',
+      'inputs.reset.label': 'Reset awarii',
+      'inputs.reset.description':
+        'Przycisk monostabilny w drzwiach szafy, podany na IN-04. ON = wciśnięty. Wraca do OFF po puszczeniu.',
+
+      'outputs.ignition.label': 'Przekaźnik zapłonu',
+      'outputs.ignition.description':
+        'ON = styk NC w linii gaszenia otwarty, obwód zapłonu czynny. OFF = zapłon zwarty do masy, silnik zatrzymany.',
+      'outputs.starter.label': 'Przekaźnik rozrusznika',
+      'outputs.starter.description':
+        'Steruje cewką stycznika rozrusznika, nie zasila rozrusznika bezpośrednio. ON = stycznik załączony, rozrusznik kręci. OFF = stycznik rozwarty.',
+
+      'counters.attempts': 'próby',
+
+      'states.AGR_READY.description':
+        'Sterownik zasilany, wyjścia w stanie bezpiecznym. Linia gaszenia zwarta do masy. Start blokują dwa niezależne warunki na dwóch różnych zegarach: żądanie musi być przytrzymane {t_request_hold} s (filtr wejścia) ORAZ sterownik musi stać w tym stanie {t_ready} s (zegar stanu). Drugi warunek liczy się tylko zaraz po cyklu albo po skasowaniu awarii; gdy sterownik już postał, jest dawno spełniony — i tak ma być, wypoczęty silnik nie potrzebuje postoju. Warunek `not running` blokuje start, jeśli silnik z jakiegoś powodu nadal chodzi.',
+      'states.AGR_READY.transitions.0.description':
+        'Żądanie przytrzymane {t_request_hold} s i postój w gotowości {t_ready} s minął — rozruch',
+
+      'states.AGR_CRANKING.description':
+        'Rozrusznik załączony. Limit czasu chroni bendiks.',
+      'states.AGR_CRANKING.transitions.0.description': 'Alarm CO podczas rozruchu',
+      'states.AGR_CRANKING.transitions.1.description': 'Zanik sygnału z Deye w trakcie rozruchu',
+      'states.AGR_CRANKING.transitions.2.description': 'Potwierdzenie pracy',
+      'states.AGR_CRANKING.transitions.3.description':
+        'Próba {attempts}/{attempts_max}: brak potwierdzenia pracy w {t_crank} s — wyczerpany limit prób',
+      'states.AGR_CRANKING.transitions.4.description':
+        'Próba {attempts}/{attempts_max}: brak potwierdzenia pracy w {t_crank} s — przerwa {t_pause} s',
+
+      'states.AGR_RUNNING.description': 'Silnik pracuje, falownik ładuje bank.',
+      'states.AGR_RUNNING.transitions.0.description': 'Alarm CO przy pracującym silniku',
+      'states.AGR_RUNNING.transitions.1.description':
+        'Zanik potwierdzenia pracy bez polecenia gaszenia — przyczyna poza sterownikiem',
+      'states.AGR_RUNNING.transitions.2.description': 'Zanik sygnału z Deye',
+
+      'states.AGR_FAULT.description':
+        'Przekaźnik zapłonu OFF. Wymaga ręcznego skasowania. Kasowanie zablokowane, dopóki utrzymuje się potwierdzenie pracy — oznacza to niesprawny obwód gaszenia.',
+      'states.AGR_FAULT.transitions.0.description': 'Kasowanie awarii',
+
+      'states.AGR_PAUSE.description': 'Przerwa termiczna rozrusznika przed kolejną próbą.',
+      'states.AGR_PAUSE.transitions.0.description': 'Alarm CO między próbami',
+      'states.AGR_PAUSE.transitions.1.description': 'Potwierdzenie pracy przy rozruszniku OFF',
+      'states.AGR_PAUSE.transitions.2.description': 'Zanik sygnału z Deye między próbami — cykl przerwany',
+      'states.AGR_PAUSE.transitions.3.description': 'Przerwa {t_pause} s upłynęła — kolejna próba',
+
+      'states.AGR_STOPPING.description':
+        'Przekaźnik zapłonu OFF — styk NC zwiera zapłon do masy.',
+      'states.AGR_STOPPING.transitions.0.description': 'Zanik potwierdzenia pracy',
+      'states.AGR_STOPPING.transitions.1.description':
+        'Potwierdzenie pracy utrzymane {t_rundown} s po zwarciu zapłonu — obwód gaszenia niesprawny'
+    }
+  }
+};
+const REPO = 'https://github.com/PawelSroczynski/genset-controller';
+</script>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --tlo:#141b24; --panel:#1b2530; --panel2:#222e3b; --linia:#2e3d4d;
+  --tekst:#e6edf3; --szary:#8da0b3; --akcent:#7BAFD4; --amber:#F7A800;
+  --zielony:#4fb477; --czerwony:#e05c4b;
+}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  background:var(--tlo);color:var(--tekst);font-size:14px;height:100vh;overflow:hidden;
+  display:flex;flex-direction:column}
+header{background:#101720;border-bottom:1px solid var(--linia);padding:9px 14px;
+  display:flex;align-items:center;justify-content:space-between;gap:10px 14px;
+  flex:0 0 auto;flex-wrap:wrap}
+h1{font-size:15px;font-weight:700;min-width:0;flex:1 1 auto}
+h1 span{color:var(--szary);font-weight:400;font-size:12px;margin-left:9px}
+@media(max-width:1100px){h1 span{display:block;margin:2px 0 0;font-size:11.5px}}
+.sterowanie{display:flex;gap:8px 10px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+.cykl{display:flex;gap:6px;align-items:baseline;padding:5px 11px;flex-wrap:wrap;
+  border:1px solid var(--linia);border-radius:9px;background:#161e27}
+.cykl .tag{font-size:9.5px;letter-spacing:1.2px;text-transform:uppercase;
+  color:#6f8296;font-weight:700}
+.cykl-czas{font-family:ui-monospace,monospace;font-size:16px;font-weight:700;color:var(--amber)}
+.cykl-czas.zamkniety{color:var(--zielony)}
+.cykl-opis{font-size:11px;color:var(--szary)}
+button{background:var(--panel2);color:var(--tekst);border:1px solid var(--linia);
+  border-radius:7px;padding:6px 12px;font-size:12.5px;cursor:pointer;font-family:inherit;white-space:nowrap}
+button:hover{background:#2c3a4a;border-color:#3d5062}
+button.gra{background:var(--zielony);border-color:var(--zielony);color:#08130c;font-weight:600}
+button.stop{background:var(--amber);border-color:var(--amber);color:#2a1d00;font-weight:600}
+select{background:var(--panel2);color:var(--tekst);border:1px solid var(--linia);
+  border-radius:7px;padding:6px 8px;font-size:12.5px;font-family:inherit}
+main{flex:1 1 auto;min-height:0;display:flex;flex-direction:column;gap:12px;padding:12px 18px 14px}
+.diagram{flex:1 1 40%;min-height:0;background:var(--panel);border:1px solid var(--linia);
+  border-radius:12px;padding:10px;display:flex}
+svg{width:100%;height:100%;display:block}
+.kolumny{flex:1 1 60%;min-height:0;display:grid;
+  grid-template-columns:1.3fr 1.1fr 1.05fr 1.25fr;gap:12px}
+.karta{background:var(--panel);border:1px solid var(--linia);border-radius:12px;
+  padding:12px 14px;display:flex;flex-direction:column;min-height:0}
+.karta h2{font-size:10.5px;text-transform:uppercase;letter-spacing:1.1px;color:var(--szary);
+  margin-bottom:9px;font-weight:600;flex:0 0 auto}
+.karta .tresc{flex:1 1 auto;min-height:0;overflow-y:auto;
+  scrollbar-width:thin;scrollbar-color:#36465a transparent;padding-right:4px}
+.karta .tresc::-webkit-scrollbar{width:6px}
+.karta .tresc::-webkit-scrollbar-track{background:transparent}
+.karta .tresc::-webkit-scrollbar-thumb{background:#36465a;border-radius:3px}
+.karta .tresc::-webkit-scrollbar-thumb:hover{background:#44586e}
+.wiersz{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;
+  padding:9px 0;border-bottom:1px solid #212d39}
+.wiersz:last-child{border-bottom:none}
+.etyk{font-size:13px;line-height:1.35;min-width:0;overflow-wrap:anywhere;font-weight:500}
+.etyk small{display:block;color:#6d8097;font-size:11px;line-height:1.5;
+  margin-top:3px;font-weight:400}
+.przel{position:relative;width:42px;height:23px;flex:0 0 auto;margin-top:1px;background:#2b3a49;
+  border-radius:12px;cursor:pointer;transition:background .15s;border:1px solid var(--linia)}
+.przel::after{content:'';position:absolute;top:2px;left:2px;width:17px;height:17px;
+  border-radius:50%;background:#7d8f9f;transition:transform .15s,background .15s}
+.przel.on{background:#2f6f4f;border-color:#3d8a63}
+.przel.on::after{transform:translateX(19px);background:var(--zielony)}
+.przel.chwil{border-style:dashed}
+.lampka{width:13px;height:13px;border-radius:50%;background:#33434f;flex:0 0 auto;margin-top:5px}
+.lampka.on{background:var(--zielony);box-shadow:0 0 9px var(--zielony)}
+.lampka.alarm.on{background:var(--czerwony);box-shadow:0 0 9px var(--czerwony)}
+.licznik{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;color:var(--amber)}
+.log{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.2px;line-height:1.5}
+.log div{padding:0;margin:0 0 5px;line-height:1.3;white-space:pre-wrap}
+.log div:last-child{margin-bottom:0}
+.log .t{color:var(--szary)}
+.log .s{color:var(--akcent);font-weight:600}
+.log .a{color:var(--czerwony);font-weight:600}
+.log .m{color:#9a8bd0}
+.log .pu{color:#4fb477}
+.log .pd{color:#8aa0b5}
+.pin{font-family:ui-monospace,monospace;font-size:10px;color:#8ca3b8;
+  background:#1f2a36;border:1px solid #33455a;border-radius:3px;
+  padding:1px 5px;margin-right:6px;letter-spacing:.3px;vertical-align:1px}
+.wiersz.model{border-top:1px dashed #44556a;border-bottom:none;padding-top:10px;margin-top:8px}
+.urz{display:inline-block;margin-top:4px;color:var(--akcent);text-decoration:none;
+  font-size:10.5px;border-bottom:1px dotted #3f6480}
+.urz:hover{border-bottom-style:solid}
+.auto{font-size:9px;letter-spacing:.8px;text-transform:uppercase;color:#9a8bd0;
+  background:#241f36;border:1px solid #4b4270;border-radius:4px;
+  padding:1px 5px;margin-left:6px;vertical-align:1px}
+.przej{padding:6px 8px;border-radius:6px;background:#1a2430;border:1px solid #26333f;
+  margin-bottom:5px;font-size:11.6px;line-height:1.4;overflow-wrap:anywhere}
+.przej.gotowe{border-color:var(--zielony);background:#172a20}
+.przej b{color:var(--akcent)}
+.przej code{font-family:ui-monospace,monospace;color:var(--amber);font-size:11px}
+.przej small{color:var(--szary);display:block;margin-top:1px}
+/* modal YAML */
+.modal{position:fixed;inset:0;background:#000a;display:none;z-index:200;
+  align-items:center;justify-content:center;padding:30px}
+.modal.otw{display:flex}
+.modal-box{background:var(--panel);border:1px solid var(--linia);border-radius:12px;
+  width:min(1000px,92vw);max-height:88vh;display:flex;flex-direction:column;overflow:hidden}
+.modal-box header{background:transparent;border-bottom:1px solid var(--linia)}
+textarea{flex:1 1 auto;min-height:300px;background:#0f151c;color:#cfe0ee;border:none;
+  padding:14px 16px;font-family:ui-monospace,monospace;font-size:12px;line-height:1.5;
+  resize:none;outline:none}
+.blad{background:#3a1a16;color:#ffb3a7;padding:8px 16px;font-size:12px;
+  font-family:ui-monospace,monospace;display:none}
+.modal-stopka{padding:11px 16px;display:flex;gap:8px;border-top:1px solid var(--linia)}
+.linki{display:inline-flex;flex-wrap:wrap;gap:0 12px}
+.linki a{color:var(--akcent);text-decoration:none;font-size:12px}
+.linki.sep{border-left:1px solid var(--linia);padding-left:12px;margin-left:4px}
+#podtytul a{color:var(--akcent);text-decoration:none;border-bottom:1px dotted #4a6d86}
+#podtytul a:hover{border-bottom-style:solid}
+.linki a:hover{text-decoration:underline}
+@media(max-width:1450px){
+  body{height:auto;overflow:auto}
+  main{height:auto}
+  .diagram{flex:0 0 auto;min-height:280px}
+  .kolumny{flex:0 0 auto;grid-template-columns:1fr 1fr}
+  .karta{max-height:none}
+  .karta .tresc{max-height:300px}
+}
+@media(max-width:860px){.kolumny{grid-template-columns:1fr}}
+@media(max-width:1250px){
+  body{height:auto;overflow:auto}
+  main{height:auto}
+  .diagram{min-height:300px}
+  .kolumny{grid-template-columns:1fr 1fr;}
+  .karta{max-height:360px}
+}
+@media(max-width:700px){.kolumny{grid-template-columns:1fr}header{flex-wrap:wrap}}
+.stan-teraz{font-size:19px;font-weight:700;color:var(--amber);font-family:ui-monospace,monospace}
+.stan-opis{color:var(--szary);font-size:12.5px;margin-top:4px;line-height:1.45}
+.zegar{font-family:ui-monospace,monospace;color:var(--szary);font-size:12.5px}
+</style>
+<style>
+/* przełącznik języka + ikona repozytorium */
+.jezyk{display:inline-flex;border:1px solid var(--linia);border-radius:7px;overflow:hidden}
+.jezyk button{border:none;border-radius:0;padding:6px 9px;font-size:11.5px;font-weight:700;
+  letter-spacing:.5px;background:var(--panel2);color:#8da0b3}
+.jezyk button+button{border-left:1px solid var(--linia)}
+.jezyk button.akt{background:var(--akcent);color:#0d1922}
+.ikona{display:inline-flex;align-items:center;justify-content:center;width:31px;height:31px;
+  border:1px solid var(--linia);border-radius:7px;background:var(--panel2);color:#9fb4c7}
+.ikona:hover{background:#2c3a4a;border-color:#3d5062;color:var(--tekst)}
+.ikona svg{width:17px;height:17px;display:block;fill:currentColor}
+/* licznik filtra przytrzymania wejścia */
+.filtr{display:inline-block;margin-left:7px;font-family:ui-monospace,monospace;font-size:10px;
+  color:var(--amber);background:#2a2208;border:1px solid #5a4a12;border-radius:3px;
+  padding:1px 5px;vertical-align:1px;visibility:hidden}
+.filtr.widac{visibility:visible}
+</style>
+</head>
+<body>
+<header>
+  <h1><span data-i18n="title">Genset controller simulator</span> <span id="podtytul"></span></h1>
+  <div class="sterowanie">
+    <div class="cykl">
+      <span class="tag" data-i18n="cycle">cycle</span>
+      <span class="cykl-czas" id="cyklCzas">—</span>
+      <span class="cykl-opis" id="cyklOpis"></span>
+      <span class="tag" style="margin-left:14px" data-i18n="cycles">cycles</span>
+      <span class="licznik" id="cykle">0</span>
+    </div>
+    <select id="tempo">
+      <option value="1" selected>1×</option><option value="4">4×</option>
+      <option value="10">10×</option><option value="30">30×</option>
+    </select>
+    <button id="bReset" data-i18n="btn.reset">↺ Restart</button>
+    <button id="bYaml">YAML</button>
+    <span class="linki" id="linkiSter"></span>
+    <span class="linki sep">
+      <a href="state-machine.yaml">state-machine.yaml</a>
+      <a href="genset-controller.yaml" data-i18n="link.config">configuration</a>
+    </span>
+    <a class="ikona" id="linkRepo" href="#" target="_blank" rel="noopener">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.07-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A7.995 7.995 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+    </a>
+    <span class="jezyk">
+      <button data-lang="pl">PL</button><button data-lang="en">EN</button>
+    </span>
+  </div>
+</header>
+
+<main>
+  <div class="diagram"><svg id="svg" preserveAspectRatio="xMidYMid meet"></svg></div>
+
+  <div class="kolumny">
+    <div class="karta">
+      <h2 data-i18n="card.inputs">Inputs</h2>
+      <div class="tresc" id="wejscia"></div>
+    </div>
+
+    <div class="karta">
+      <h2 data-i18n="card.outputs">Outputs and counters</h2>
+      <div class="tresc">
+        <div id="wyjscia"></div>
+        <div id="liczniki" style="margin-top:10px"></div>
+      </div>
+    </div>
+
+    <div class="karta">
+      <h2 data-i18n="card.state">Current state</h2>
+      <div class="tresc">
+        <div class="stan-teraz" id="stanNazwa">—</div>
+        <div class="stan-opis" id="stanOpis"></div>
+        <div id="przejscia" style="margin-top:10px"></div>
+      </div>
+    </div>
+
+    <div class="karta">
+      <h2 data-i18n="card.log">Event log</h2>
+      <div class="tresc log" id="log"></div>
+    </div>
+  </div>
+</main>
+
+<div class="modal" id="modal">
+  <div class="modal-box">
+    <header><h1 data-i18n="modal.title">State machine definition</h1>
+      <button id="bZamknij" data-i18n="btn.close">✕ Close</button></header>
+    <div class="blad" id="blad"></div>
+    <textarea id="yaml" spellcheck="false"></textarea>
+    <div class="modal-stopka">
+      <button id="bZastosuj" class="stop" data-i18n="btn.apply">Apply</button>
+      <button id="bPrzywroc" data-i18n="btn.restore">Restore original</button>
+    </div>
+  </div>
+</div>
+<script>
+// ---------------------------------------------------------------------
+//  Język. Kanoniczne teksty siedzą w YAML-u po angielsku; I18N.pl.yaml
+//  nadpisuje je po ścieżce. Brak klucza = tekst z YAML-a.
+// ---------------------------------------------------------------------
+let LANG='pl';
+function T(k){
+  const a=(I18N[LANG]||{}).ui||{}, b=I18N.en.ui;
+  return a[k]!==undefined ? a[k] : (b[k]!==undefined ? b[k] : k);
+}
+function TY(sciezka, oryg){
+  const a=(I18N[LANG]||{}).yaml||{};
+  return a[sciezka]!==undefined ? a[sciezka] : oryg;
+}
+function zapiszJezyk(l){ try{ localStorage.setItem('lang',l); }catch(e){} }
+function czytajJezyk(){
+  try{ const l=localStorage.getItem('lang'); if(l==='pl'||l==='en') return l; }catch(e){}
+  return (navigator.language||'').toLowerCase().startsWith('pl') ? 'pl' : 'en';
+}
+function ustawJezyk(l){
+  LANG=l;
+  document.documentElement.lang=l;
+  document.title=T('title');
+  document.querySelectorAll('[data-i18n]').forEach(e=>{ e.textContent=T(e.dataset.i18n); });
+  document.getElementById('tempo').title=T('tempo.title');
+  const lr=document.getElementById('linkRepo'); lr.href=REPO; lr.title=T('link.github');
+  document.querySelectorAll('.jezyk button').forEach(b=>b.classList.toggle('akt',b.dataset.lang===l));
+  zapiszJezyk(l);
+  if(M){ naglowek(); rysujWejscia(); cacheWy=null; cacheLic=null; ostatniStan=null; ostatniSvg=''; odswiez(); }
+}
+
+const esc=(s)=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+let zrodloOryg='';
+let stanIdle='', cyklStart=null, cyklOstatni=null, cykle=0;
+let modelSilnika=true, czasZaskoku=null, czasZgaszenia=null;
+let poprzWe={}, poprzWy={}, poprzF={};
+let weF={}, holdT={};                  // wartości po filtrze przytrzymania i ich zegary
+const PROG_NIEUDANEJ=0.25;             // udział prób, które nie zaskoczą
+let M=null, stan=null, t=0, wStanie=0, we={}, lic={}, gra=false, petla=null, zrodlo='';
+
+function wyrazenie(txt){
+  return String(txt)
+    .replace(/\bnot\b/g,'!').replace(/\band\b/g,'&&').replace(/\bor\b/g,'||');
+}
+function ocen(txt, zakr){
+  if(txt===undefined||txt===null) return true;
+  try{
+    const k=Object.keys(zakr), v=k.map(x=>zakr[x]);
+    return !!(new Function(...k, 'return ('+wyrazenie(txt)+')'))(...v);
+  }catch(e){ return false; }
+}
+// logika widzi weF (po filtrze), nie we (stan fizyczny pinu)
+function zakres(){ return Object.assign({}, weF, lic, M.parameters||{}); }
+
+// --- filtr przytrzymania wejścia ------------------------------------
+// Odpowiednik `delayed_on` na binary_sensorze w ESPHome. Zbocze ON wymaga
+// utrzymania sygnału; zbocze OFF jest natychmiastowe. Tego NIE DA SIĘ
+// wyrazić zegarem stanu — zegar stanu mierzy czas w stanie, który zdążył
+// upłynąć, póki sterownik stał bezczynnie.
+function limitHold(k){
+  const h=((M.inputs||{})[k]||{}).hold;
+  if(h===undefined||h===null) return null;
+  return (typeof h==='string') ? (M.parameters||{})[h] : h;
+}
+function filtrKrok(dt){
+  for(const k in (M.inputs||{})){
+    const lim=limitHold(k);
+    if(lim===null||lim===undefined){ weF[k]=!!we[k]; holdT[k]=0; continue; }
+    if(!we[k]){ weF[k]=false; holdT[k]=0; }
+    else if(!weF[k]){ holdT[k]=(holdT[k]||0)+dt; if(holdT[k]>=lim){ weF[k]=true; } }
+  }
+}
+
+function naglowek(){
+  const g=M.genset||{}, st=M.controller||{};
+  let pod=esc(M.name||'');
+  if(st.model && st.datasheet){
+    pod=pod.replace(esc(st.model),
+      '<a href="'+esc(st.datasheet)+'" target="_blank" rel="noopener">'+esc(st.model)+'</a>');
+  }
+  if(g.model && g.datasheet){
+    pod=pod.replace(esc(g.model),
+      '<a href="'+esc(g.datasheet)+'" target="_blank" rel="noopener">'+esc(g.model)+'</a>');
+  }
+  document.getElementById('podtytul').innerHTML=pod;
+  const lk=document.getElementById('linkiSter');
+  if(lk){
+    const poz=[['documentation','link.documentation'],['templates','link.templates'],['pinout','link.pinout']];
+    let h = poz.filter(([k])=>st[k])
+      .map(([k,tk])=>'<a href="'+esc(st[k])+'" target="_blank" rel="noopener">'+esc(T(tk))+'</a>').join('');
+    if(g.datasheet) h += '<a href="'+esc(g.datasheet)+'" target="_blank" rel="noopener">'+esc(g.model||'genset')+'</a>';
+    lk.innerHTML = h;
+  }
+}
+
+function zaladuj(txt){
+  const d = jsyaml.load(txt);
+  if(!d || !d.states) throw new Error(T('err.noStates'));
+  M=d; zrodlo=txt;
+  naglowek();
+  rysujWejscia();
+  resetuj();
+}
+function resetuj(){
+  stanIdle = Object.keys(M.states)[0];
+  stan = stanIdle; t=0; wStanie=0;
+  cyklStart=null; cyklOstatni=null; cykle=0;
+  czasZaskoku=null; czasZgaszenia=null;
+  cacheWy=null; cacheLic=null; ostatniStan=null; ostatniSvg='';
+  we={}; for(const k in (M.inputs||{})) we[k] = !!M.inputs[k].default;
+  weF={}; holdT={}; filtrKrok(0);
+  lic={}; for(const k in (M.counters||{})) lic[k]=M.counters[k];
+  // migawka startowa — bez niej pierwszy tick zgłosiłby wszystkie piny jako zmienione
+  poprzWe={}; for(const k in (M.inputs||{})) poprzWe[k]=!!we[k];
+  poprzF={};  for(const k in (M.inputs||{})) poprzF[k]=!!weF[k];
+  poprzWy={}; const w0=wyjsciaStanu();
+  for(const k in (M.outputs||{})) poprzWy[k]=!!w0[k];
+  document.getElementById('log').innerHTML='';
+  loguj(T('log.reset'),'s');
+  odswiez();
+}
+function loguj(txt,kl){
+  const el=document.getElementById('log');
+  const d=document.createElement('div');
+  d.innerHTML='<span class="t">['+t.toFixed(1).padStart(6)+'s]</span> '+
+    (kl?'<span class="'+kl+'">'+txt+'</span>':txt);
+  el.insertBefore(d, el.firstChild); el.scrollTop=0;
+}
+function podstaw(s){
+  return String(s).replace(/\{(\w+)\}/g,(m,k)=>{
+    if(lic[k]!==undefined) return lic[k];
+    if(M.parameters && M.parameters[k]!==undefined) return M.parameters[k];
+    return m;
+  });
+}
+function linkUrzadzenia(o,sciezka){
+  const u=o.device;
+  if(!u||!u.url) return '';
+  const nazwa = TY(sciezka+'.device.name', u.name) || T('word.datasheet');
+  return '<a class="urz" href="'+esc(u.url)+'" target="_blank" rel="noopener">'+
+         esc(nazwa)+' &#8599;</a>';
+}
+function etykPinu(grupa,k){
+  const o=(M[grupa]||{})[k]||{};
+  return TY(grupa+'.'+k+'.label', o.label||k);
+}
+function opisPinu(grupa,k){
+  const o=(M[grupa]||{})[k]||{};
+  return (o.pin? o.pin+' ' : '')+etykPinu(grupa,k);
+}
+function logujZmianyWe(){
+  for(const k in (M.inputs||{})){
+    const v=!!we[k];
+    if(poprzWe[k]!==v){ poprzWe[k]=v;
+      loguj((v?'▲ ':'▼ ')+opisPinu('inputs',k)+(v?' — ON':' — OFF'), v?'pu':'pd'); }
+  }
+}
+// zmiana po filtrze to osobne zdarzenie od zmiany na pinie — i osobny wiersz
+function logujZmianyFiltr(){
+  for(const k in (M.inputs||{})){
+    if(limitHold(k)===null||limitHold(k)===undefined) continue;
+    const v=!!weF[k];
+    if(poprzF[k]!==v){ poprzF[k]=v;
+      loguj((v?'▲ ':'▼ ')+T('log.filter')+' '+opisPinu('inputs',k)+(v?' — ON':' — OFF'), v?'pu':'pd'); }
+  }
+}
+function logujZmianyWy(){
+  const wy=wyjsciaStanu();
+  for(const k in (M.outputs||{})){
+    const v=!!wy[k];
+    if(poprzWy[k]!==v){ poprzWy[k]=v;
+      loguj((v?'▲ ':'▼ ')+opisPinu('outputs',k)+(v?' — ON':' — OFF'), v?'pu':'pd'); }
+  }
+}
+function jestAwaria(k){ return !!((M.states[k]||{}).fault); }
+function wyjsciaStanu(){ return (M.states[stan]||{}).outputs || {}; }
+function opisStanu(k){ return TY('states.'+k+'.description', (M.states[k]||{}).description||''); }
+function opisPrzejscia(k,i,p){ return TY('states.'+k+'.transitions.'+i+'.description', p.description||''); }
+
+function zastosujAkcje(a){
+  if(!a) return;
+  for(const k in a){
+    const v=a[k];
+    if(typeof v==='string' && /^[+-]/.test(v)) lic[k]=(lic[k]||0)+parseFloat(v);
+    else lic[k]=v;
+  }
+}
+function gotowe(p){
+  const z=zakres();
+  if(p.when!==undefined && !ocen(p.when,z)) return false;
+  if(p.after!==undefined){
+    const lim = (typeof p.after==='string') ? (M.parameters||{})[p.after] : p.after;
+    if(wStanie < lim) return false;
+  }
+  return true;
+}
+function modelSilnikaKrok(dt){
+  if(!modelSilnika) return;
+  const zezw = !!wyjsciaStanu().ignition;
+  // potwierdzenie pracy: tylko gdy rozrusznik kręci i wylosowany czas minął
+  if (!!wyjsciaStanu().starter && !we.running && czasZaskoku!==null && wStanie>=czasZaskoku){
+    we.running=true;
+  }
+  // po zdjęciu zapłonu silnik zatrzymuje się w 1,5–2,5 s
+  if (we.running && !zezw){
+    if (czasZgaszenia===null) czasZgaszenia = t + 1.5 + Math.random();
+    else if (t>=czasZgaszenia){ we.running=false; czasZgaszenia=null; }
+  } else if (zezw) { czasZgaszenia=null; }
+}
+function tik(dt){
+  t+=dt; wStanie+=dt;
+  modelSilnikaKrok(dt);
+  logujZmianyWe();
+  filtrKrok(dt);
+  logujZmianyFiltr();
+  const lista=(M.states[stan]||{}).transitions||[];
+  for(let i=0;i<lista.length;i++){
+    const p=lista[i];
+    if(gotowe(p)){
+      const poprz=stan;
+      zastosujAkcje(p.actions);
+      stan=p.to; wStanie=0;
+      const kl = jestAwaria(stan)?'a':'s';
+      const op = opisPrzejscia(poprz,i,p);
+      loguj(poprz+' → '+stan+(op?'  · '+podstaw(op):''),kl);
+      zastosujAkcje((M.states[stan]||{}).actions);
+      if (poprz===stanIdle && stan!==stanIdle) { cyklStart=t; }
+      if (poprz!==stanIdle && stan===stanIdle) {
+        cyklOstatni = (cyklStart!==null) ? t-cyklStart : null;
+        cyklStart=null; cykle++;
+        if (cyklOstatni!==null) loguj(T('log.cycleClosed')+' — '+cyklOstatni.toFixed(1)+' s','s');
+      }
+      if (modelSilnika && !!wyjsciaStanu().starter){
+        if (Math.random() < PROG_NIEUDANEJ){
+          czasZaskoku = Infinity;
+          loguj(T('log.noCatch'),'m');
+        } else {
+          czasZaskoku = 2.0 + Math.random()*0.8;
+          loguj(T('log.catch')+' '+czasZaskoku.toFixed(1)+' s','m');
+        }
+      }
+      break;
+    }
+  }
+  logujZmianyWy();
+  // wejścia chwilowe wracają do zera
+  for(const k in (M.inputs||{})) if(M.inputs[k].momentary && we[k]){ we[k]=false; }
+  logujZmianyWe();
+  filtrKrok(0); logujZmianyFiltr();
+  odswiez();
+}
+
+let cacheFiltr={};
+function rysujWejscia(){
+  const c=document.getElementById('wejscia'); c.innerHTML=''; cacheFiltr={};
+  for(const k in (M.inputs||{})){
+    const w=M.inputs[k];
+    const d=document.createElement('div'); d.className='wiersz';
+    const auto = (k==='running' && modelSilnika) ? ' <span class="auto">auto</span>' : '';
+    const hl = limitHold(k);
+    const fil = (hl!==null&&hl!==undefined) ? ' <span class="filtr"></span>' : '';
+    const opis = TY('inputs.'+k+'.description', w.description||'');
+    d.innerHTML='<div class="etyk">'+(w.pin?'<span class="pin">'+esc(w.pin)+'</span> ':'')+
+      esc(etykPinu('inputs',k))+auto+fil+
+      (opis?'<small>'+esc(podstaw(opis))+linkUrzadzenia(w,'inputs.'+k)+'</small>':'')+'</div>';
+    const p=document.createElement('div');
+    p.className='przel'+(w.momentary?' chwil':''); p.dataset.k=k;
+    p.onclick=()=>{
+      if(k==='running' && modelSilnika){ modelSilnika=false; loguj(T('log.manual'),'m'); }
+      we[k]=!we[k]; logujZmianyWe(); filtrKrok(0); logujZmianyFiltr(); odswiez(); };
+    d.appendChild(p); c.appendChild(d);
+    const f=d.querySelector('.filtr'); if(f) cacheFiltr[k]=f;
+  }
+  // warstwa symulacji na końcu — po wejściach, które istnieją w szafie
+  const m=document.createElement('div'); m.className='wiersz model';
+  m.innerHTML='<div class="etyk"><b>'+esc(T('model.label'))+'</b>'+
+    '<small>'+esc(T('model.description'))+'</small></div>';
+  const mp=document.createElement('div');
+  mp.className='przel'+(modelSilnika?' on':''); mp.id='przelModel';
+  mp.onclick=()=>{ modelSilnika=!modelSilnika;
+    loguj(modelSilnika?T('log.modelOn'):T('log.modelOff'),'m');
+    rysujWejscia(); odswiez(); };
+  m.appendChild(mp); c.appendChild(m);
+}
+function rysujSvg(){
+  const S=M.states, W=160, H=56, MAR=26;
+  let minX=1e9,minY=1e9,maxX=-1e9,maxY=-1e9;
+  for(const k in S){
+    minX=Math.min(minX,S[k].x); minY=Math.min(minY,S[k].y);
+    maxX=Math.max(maxX,S[k].x+W); maxY=Math.max(maxY,S[k].y+H);
+  }
+  const svg=document.getElementById('svg');
+  svg.setAttribute('viewBox',(minX-MAR)+' '+(minY-MAR)+' '+
+    (maxX-minX+2*MAR)+' '+(maxY-minY+2*MAR));
+  let g='<defs><marker id="gr" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">'+
+        '<path d="M0,0 L8,3 L0,6 z" fill="#52677c"/></marker>'+
+        '<marker id="grA" markerWidth="9" markerHeight="9" refX="8" refY="3" orient="auto">'+
+        '<path d="M0,0 L8,3 L0,6 z" fill="#4fb477"/></marker></defs>';
+  // strzałki
+  for(const k in S){
+    const lst=S[k].transitions||[];
+    for(let i=0;i<lst.length;i++){
+      const p=lst[i];
+      const a=S[k], b=S[p.to]; if(!b) continue;
+      const x1=a.x+W/2, y1=a.y+H/2, x2=b.x+W/2, y2=b.y+H/2;
+      const dx=x2-x1, dy=y2-y1, L=Math.hypot(dx,dy)||1;
+      const ux=dx/L, uy=dy/L;
+      const rx=W/2+9, ry=H/2+9;
+      // odległość od środka do krawędzi prostokąta wzdłuż (ux,uy)
+      const kraw=(u,v)=>Math.min(Math.abs(u)<1e-6?1e9:rx/Math.abs(u),
+                                 Math.abs(v)<1e-6?1e9:ry/Math.abs(v));
+      const d1=kraw(ux,uy), d2=d1;
+      const px1=x1+ux*d1, py1=y1+uy*d1;
+      const px2=x2-ux*d2, py2=y2-uy*d2;
+      const akt=(k===stan), ok=akt&&gotowe(p);
+      // łuk: wygięcie w lewo względem kierunku jazdy — rozdziela pary tam i z powrotem
+      const lx=px2-px1, ly=py2-py1, LL=Math.hypot(lx,ly)||1;
+      const nx=-ly/LL, ny=lx/LL;
+      const wyg=Math.min(LL*0.18, 52);
+      const cx=(px1+px2)/2+nx*wyg, cy=(py1+py2)/2+ny*wyg;
+      const op=opisPrzejscia(k,i,p);
+      g+='<path d="M '+px1+' '+py1+' Q '+cx+' '+cy+' '+px2+' '+py2+'" fill="none" '+
+         'stroke="'+(ok?'#4fb477':(akt?'#7BAFD4':'#3a4a5c'))+'" stroke-width="'+(akt?2.2:1.3)+'" '+
+         'marker-end="url(#'+(ok?'grA':'gr')+')" opacity="'+(akt?1:.5)+'">'+
+         '<title>'+esc(k+' → '+p.to+(op?'\n'+podstaw(op):'')+(p.when?'\n'+T('word.when')+': '+p.when:'')+
+         (p.after!==undefined?'\n'+T('word.after')+': '+p.after:''))+'</title></path>';
+    }
+  }
+  // węzły
+  for(const k in S){
+    const s=S[k], akt=(k===stan);
+    const kol = akt ? (jestAwaria(k)?'#e05c4b':'#F7A800') : '#2b3a49';
+    const txt = akt ? (jestAwaria(k)?'#2a0d08':'#2a1d00') : '#cfe0ee';
+    g+='<g><rect x="'+s.x+'" y="'+s.y+'" width="'+W+'" height="'+H+'" rx="10" '+
+       'fill="'+kol+'" stroke="'+(akt?kol:'#3a4a5c')+'" stroke-width="'+(akt?2.5:1.3)+'"/>'+
+       '<text x="'+(s.x+W/2)+'" y="'+(s.y+H/2+5)+'" text-anchor="middle" '+
+       'font-family="ui-monospace,monospace" font-size="14" font-weight="700" fill="'+txt+'">'+k+'</text>'+
+       '<title>'+esc(podstaw(opisStanu(k))||k)+'</title></g>';
+  }
+  svg.innerHTML=g;
+}
+let cacheWy=null, cacheLic=null, ostatniStan=null, ostatniSvg='';
+
+function budujWyjscia(){
+  const c=document.getElementById('wyjscia'); c.innerHTML=''; cacheWy={};
+  for(const k in (M.outputs||{})){
+    const o=M.outputs[k];
+    const opis = TY('outputs.'+k+'.description', o.description||'');
+    const d=document.createElement('div'); d.className='wiersz';
+    d.innerHTML='<div class="etyk">'+(o.pin?'<span class="pin">'+esc(o.pin)+'</span> ':'')+
+      esc(etykPinu('outputs',k))+
+      (opis?'<small>'+esc(podstaw(opis))+linkUrzadzenia(o,'outputs.'+k)+'</small>':'')+'</div>'+
+      '<div class="lampka"></div>';
+    c.appendChild(d); cacheWy[k]=d.querySelector('.lampka');
+  }
+}
+function budujLiczniki(){
+  const cl=document.getElementById('liczniki'); cl.innerHTML=''; cacheLic={};
+  for(const k in lic){
+    const d=document.createElement('div'); d.className='wiersz';
+    d.innerHTML='<div class="etyk">'+esc(TY('counters.'+k,k))+'</div><div class="licznik"></div>';
+    cl.appendChild(d); cacheLic[k]=d.querySelector('.licznik');
+  }
+  const d=document.createElement('div'); d.className='wiersz';
+  d.innerHTML='<div class="etyk">'+esc(T('counter.time'))+'</div><div class="licznik"></div>';
+  cl.appendChild(d); cacheLic.__czas=d.querySelector('.licznik');
+}
+function budujPrzejscia(){
+  const pc=document.getElementById('przejscia'); pc.innerHTML='';
+  const lst=(M.states[stan]||{}).transitions||[];
+  for(let i=0;i<lst.length;i++){
+    const p=lst[i];
+    const e=document.createElement('div'); e.className='przej';
+    let w='→ <b>'+esc(p.to)+'</b>';
+    if(p.when) w+=' <code>'+esc(p.when)+'</code>';
+    if(p.after!==undefined) w+=' <code class="zegar-p"></code>';
+    const op=opisPrzejscia(stan,i,p);
+    if(op) w+='<small>'+esc(podstaw(op))+'</small>';
+    e.innerHTML=w; e._p=p; pc.appendChild(e);
+  }
+}
+function odswiez(){
+  const fc=(s)=>{ const m=Math.floor(s/60), r=s-m*60;
+    return m>0 ? (m+':'+r.toFixed(0).padStart(2,'0')) : (r.toFixed(1)+' s'); };
+  const ec=document.getElementById('cyklCzas'), eo=document.getElementById('cyklOpis');
+  if (cyklStart!==null){ ec.textContent=fc(t-cyklStart); ec.classList.remove('zamkniety'); eo.textContent=T('cycle.open'); }
+  else if (cyklOstatni!==null){ ec.textContent=fc(cyklOstatni); ec.classList.add('zamkniety'); eo.textContent=T('cycle.closed'); }
+  else { ec.textContent='—'; ec.classList.remove('zamkniety'); eo.textContent=T('cycle.idle'); }
+  document.getElementById('cykle').textContent=cykle;
+
+  document.querySelectorAll('.przel[data-k]').forEach(p=>p.classList.toggle('on',!!we[p.dataset.k]));
+  const pm=document.getElementById('przelModel'); if(pm) pm.classList.toggle('on',modelSilnika);
+
+  // licznik filtra: widoczny tylko gdy pin jest ON, a logika jeszcze go nie widzi
+  for(const k in cacheFiltr){
+    const lim=limitHold(k), el=cacheFiltr[k];
+    const trwa = !!we[k] && !weF[k];
+    el.classList.toggle('widac', trwa);
+    if(trwa) el.textContent=T('word.hold')+' '+(holdT[k]||0).toFixed(1)+'/'+lim+' s';
+  }
+
+  if(!cacheWy) budujWyjscia();
+  const wy=wyjsciaStanu();
+  for(const k in cacheWy) cacheWy[k].classList.toggle('on', !!wy[k]);
+
+  if(!cacheLic) budujLiczniki();
+  for(const k in lic) if(cacheLic[k]) cacheLic[k].textContent=lic[k];
+  cacheLic.__czas.textContent=wStanie.toFixed(1)+' s';
+
+  if(stan!==ostatniStan){
+    document.getElementById('stanNazwa').textContent=stan;
+    document.getElementById('stanOpis').textContent=podstaw(opisStanu(stan));
+    budujPrzejscia();
+    ostatniStan=stan;
+  }
+  let podpis='';
+  document.querySelectorAll('#przejscia .przej').forEach(e=>{
+    const p=e._p, ok=gotowe(p); podpis+=ok?'1':'0';
+    e.classList.toggle('gotowe', ok);
+    const z=e.querySelector('.zegar-p');
+    if(z){ const lim=(typeof p.after==='string')?(M.parameters||{})[p.after]:p.after;
+      z.textContent=T('word.after')+' '+wStanie.toFixed(1)+'/'+lim+' s'; }
+  });
+  const sig=stan+'|'+podpis;
+  if(sig!==ostatniSvg){ rysujSvg(); ostatniSvg=sig; }
+}
+function ustawGre(v){
+  gra=v;
+  if(petla) clearInterval(petla);
+  if(gra){
+    const mn=parseFloat(document.getElementById('tempo').value);
+    petla=setInterval(()=>tik(0.1*mn),100);
+  }
+}
+document.getElementById('bYaml').onclick=()=>document.getElementById('modal').classList.add('otw');
+document.getElementById('bZamknij').onclick=()=>document.getElementById('modal').classList.remove('otw');
+document.getElementById('modal').onclick=(e)=>{ if(e.target.id==='modal') e.target.classList.remove('otw'); };
+document.addEventListener('keydown',e=>{ if(e.key==='Escape') document.getElementById('modal').classList.remove('otw'); });
+document.getElementById('bReset').onclick=()=>{ resetuj(); };
+document.getElementById('tempo').onchange=()=>{ if(gra){ustawGre(false);ustawGre(true);} };
+document.querySelectorAll('.jezyk button').forEach(b=>{
+  b.onclick=()=>ustawJezyk(b.dataset.lang);
+});
+document.getElementById('bZastosuj').onclick=()=>{
+  const b=document.getElementById('blad');
+  try{ ustawGre(false); zaladuj(document.getElementById('yaml').value);
+        b.style.display='none'; document.getElementById('modal').classList.remove('otw');
+        ustawGre(true); }
+  catch(e){ b.textContent=T('err.yaml')+' '+e.message; b.style.display='block'; }
+};
+document.getElementById('bPrzywroc').onclick=()=>{
+  document.getElementById('yaml').value=zrodloOryg;
+  document.getElementById('bZastosuj').click();
+};
+(function(){
+  try{
+    LANG=czytajJezyk();
+    zrodloOryg=document.getElementById('defaultYaml').textContent.trim();
+    document.getElementById('yaml').value=zrodloOryg;
+    zaladuj(zrodloOryg);
+    ustawJezyk(LANG);
+    ustawGre(true);          // czas płynie od razu, jak w instalacji
+  }catch(e){
+    const b=document.getElementById('blad');
+    b.textContent=T('err.load')+' '+e.message; b.style.display='block';
+  }
+})();
+</script>
+</body>
+</html>

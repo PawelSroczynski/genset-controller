@@ -1,0 +1,398 @@
+# =====================================================================
+#  Genset controller — SMARTBOB SM-MINI-0808R (board revisions 1.5 / 1.6 / 1.7)
+#  Pin mapping per the vendor spreadsheet, sheet "PRZEKAŹNIKI 0808R".
+#
+#  On the MINI a SINGLE MCP23017 at 0x20 serves both the inputs and the relays.
+#  The spreadsheet gives identical mapping for revisions 1.5, 1.6 and 1.7.
+#  States carry the AGR_ prefix — further layers: GAZ_ (gasifier), RET_ (retort).
+#  State machine: https://www.enklava.co/files/symulator-agregatu-d2Ih/
+# =====================================================================
+
+substitutions:
+  device_name: genset-controller
+  # --- state machine parameters (seconds) ---
+  # The Deye request must be continuously ON for this long before the logic
+  # accepts it. It belongs in the INPUT FILTER below, not in the state machine:
+  # a state timer measures time in the state, which has already elapsed while
+  # the controller sat idle, so the hold would never apply.
+  t_request_hold: "5s"
+  # Minimum dwell in AGR_READY after a closed cycle or a fault reset. This one
+  # is correctly a state timer.
+  t_ready: "5"
+  t_crank: "3"             # maximum duration of a single cranking attempt
+  t_pause: "10"            # starter rest between attempts
+  t_rundown: "10"          # time allowed for the engine to come to a stop
+  attempts_max: "3"
+
+esphome:
+  name: ${device_name}
+  on_boot:
+    priority: 600
+    then:
+      # Inputs referenced TO GROUND — the Deye G-start contact is volt-free
+      - switch.turn_on: in_gnd
+      - switch.turn_off: in_vcc
+      # Safe state on every boot: ignition relay OFF = engine stopped
+      - switch.turn_off: relay_01
+      - switch.turn_off: relay_02
+
+esp32:
+  board: esp32dev
+
+logger:
+api:
+
+# Fault notifications travel over the network, not on a relay contact.
+# Uncomment and set the broker — publishes on every state change:
+#   genset/state     AGR_READY | AGR_CRANKING | AGR_PAUSE | AGR_RUNNING
+#                  | AGR_STOPPING | AGR_FAULT
+#   genset/fault     ON | OFF
+#   genset/attempts  0..3
+# From here an MQTT bridge reaches the Telegram bot.
+#mqtt:
+#  broker: 192.168.1.10
+#  topic_prefix: genset
+#  discovery: false
+#  birth_message:
+#    topic: genset/available
+#    payload: online
+#  will_message:
+#    topic: genset/available
+#    payload: offline
+ota:
+  - platform: esphome
+
+ethernet:
+  type: LAN8720
+  mdc_pin: GPIO23
+  mdio_pin: GPIO18
+  clk_mode: GPIO17_OUT
+  phy_addr: 0
+
+i2c:
+  - id: bus_a
+    sda: 15        # I2C 1 SDA
+    scl: 5         # I2C 1 SCL
+    scan: true
+
+mcp23017:
+  - id: mcp_hub    # one expander for both inputs and relays
+    address: 0x20
+    i2c_id: bus_a
+
+# =====================================================================
+#  RS485 — READING THE DEYE OVER MODBUS RTU
+#
+#  The inverter is a Modbus RTU SLAVE: address 1, 9600 8N1.
+#  Confirmed on an SG05LP3-EU-SM2 with a USB-RS485 adapter (dy-support.org
+#  thread), same address and baud rate in ha-solarman issue #841 and in the
+#  marklabs register table.
+#
+#  !! THE REGISTER ADDRESSES ARE COMMUNITY-SOURCED, NOT FROM DEYE.
+#  The map comes from the SG04LP3 family (definition file in
+#  kbialek/deye-inverter-mqtt); marklabs gives the same map for SG05LP3, with
+#  its own caveat that the full mapping of this family is still being settled.
+#  Deye does not publish a register table in the manual. Compare the first
+#  readings against the inverter's own screen.
+#
+#  !! HARDWARE PITFALL — RS485 direction control.
+#  ESPHome does not drive a DE/RE pin. On modules without automatic direction
+#  switching (some Waveshare boards) the queries go out and the reply never
+#  comes back — "no response received" with a perfectly healthy inverter.
+#  The SMARTBOB vendor template declares a bare `uart:` with no
+#  `flow_control_pin`, and the wiki lists reading an energy meter over RS485,
+#  so the on-board transceiver most likely switches direction by itself.
+#  THIS IS NOT CONFIRMED BY A DATASHEET.
+#  Diagnosis: `debug: direction: BOTH` below prints frames in both directions.
+#  TX with no RX means a direction problem, not wrong register addresses.
+#
+#  The readout is INFORMATIONAL ONLY for now. The state machine does not use
+#  it — a time window ("do not crank at 10:00 in March, PV will fill the bank
+#  by 14:00") is a separate design decision.
+# =====================================================================
+#uart:
+#  - id: mod_uart
+#    tx_pin: 33
+#    rx_pin: 13
+#    baud_rate: 9600
+#    data_bits: 8
+#    parity: NONE
+#    stop_bits: 1
+#    debug:
+#      direction: BOTH      # keep this on for the first run
+#
+#modbus:
+#  - id: mod_bus
+#    uart_id: mod_uart
+#
+#modbus_controller:
+#  - id: deye
+#    address: 1             # inverter slave ID
+#    modbus_id: mod_bus
+#    update_interval: 10s
+#    setup_priority: -10
+
+globals:
+  - id: state
+    type: int
+    restore_value: false
+    initial_value: '0'          # 0 = AGR_READY
+  - id: in_state
+    type: float
+    restore_value: false
+    initial_value: '0'
+  - id: attempts
+    type: int
+    restore_value: false
+    initial_value: '0'
+
+# =====================================================================
+#  INPUTS
+# =====================================================================
+binary_sensor:
+  - platform: gpio
+    name: "Deye start signal"
+    id: in_gen_request
+    pin: { mcp23xxx: mcp_hub, number: 8, mode: { input: true, pullup: false }, inverted: true }
+    # Asymmetric on purpose. delayed_on holds off a transient request;
+    # delayed_off lets a withdrawn request stop the cranking at once.
+    # The request hold lives HERE, which is why the lambda can treat `req`
+    # as already qualified.
+    filters: [ delayed_on: ${t_request_hold}, delayed_off: 200ms ]
+
+  - platform: gpio
+    name: "Run confirmed"
+    id: in_running
+    pin: { mcp23xxx: mcp_hub, number: 6, mode: { input: true, pullup: false }, inverted: true }
+    # slower to confirm a start, but no panic on a momentary voltage dip
+    filters: [ delayed_on: 500ms, delayed_off: 1000ms ]
+
+  - platform: gpio
+    name: "CO alarm"
+    id: in_co_alarm
+    pin: { mcp23xxx: mcp_hub, number: 5, mode: { input: true, pullup: false }, inverted: true }
+    filters: [ delayed_on: 50ms ]
+
+  - platform: gpio
+    name: "Fault reset"
+    id: in_reset
+    pin: { mcp23xxx: mcp_hub, number: 4, mode: { input: true, pullup: false }, inverted: true }
+    filters: [ delayed_on: 50ms ]
+
+  # Fault as an entity, not a relay contact — notification goes over the network.
+  - platform: template
+    name: "Genset fault"
+    id: fault
+    device_class: problem
+    lambda: 'return id(state) == 5;'
+
+# =====================================================================
+#  OUTPUTS
+#  NOTE: in the vendor template the inputs drive the relays directly
+#  (on_press -> switch.turn_on). That is absent here and must stay absent —
+#  the relays are driven by the state machine and by nothing else.
+# =====================================================================
+switch:
+  - platform: gpio
+    name: "IN-VCC"
+    id: in_vcc
+    pin: GPIO12
+    restore_mode: ALWAYS_OFF
+  - platform: gpio
+    name: "IN-GND"
+    id: in_gnd
+    pin: GPIO4
+    restore_mode: ALWAYS_ON
+
+  # RELAY-01 — IGNITION RELAY
+  # Energises an interposing relay whose NC contact sits in the kill line.
+  # Loss of power, a hung controller or a broken wire => the NC contact closes
+  # => the engine stops. Energise-to-run, never energise-to-stop.
+  - platform: gpio
+    name: "Ignition relay"
+    id: relay_01
+    pin: { mcp23xxx: mcp_hub, number: 7 }
+    restore_mode: ALWAYS_OFF
+
+  # RELAY-02 — STARTER RELAY (drives the contactor coil, never the starter itself)
+  - platform: gpio
+    name: "Starter relay"
+    id: relay_02
+    pin: { mcp23xxx: mcp_hub, number: 9 }
+    restore_mode: ALWAYS_OFF
+
+# =====================================================================
+#  STATE MACHINE
+# =====================================================================
+script:
+  - id: apply_outputs
+    mode: single
+    then:
+      - lambda: |-
+          const int s = id(state);
+          const bool ign = (s>=1 && s<=3);        // AGR_CRANKING, PAUSE, RUNNING
+          const bool crk = (s==1);                // AGR_CRANKING only
+          if (id(relay_01).state != ign) { ign ? id(relay_01).turn_on() : id(relay_01).turn_off(); }
+          if (id(relay_02).state != crk) { crk ? id(relay_02).turn_on() : id(relay_02).turn_off(); }
+
+interval:
+  - interval: 100ms
+    then:
+      - lambda: |-
+          static const char* NAMES[6] =
+            {"AGR_READY","AGR_CRANKING","AGR_PAUSE","AGR_RUNNING","AGR_STOPPING","AGR_FAULT"};
+          const float DT = 0.1f;
+          id(in_state) += DT;
+
+          const bool req = id(in_gen_request).state;
+          const bool run = id(in_running).state;
+          const bool co  = id(in_co_alarm).state;
+          const bool rst = id(in_reset).state;
+
+          int s = id(state);
+          int next = s;
+
+          switch (s) {
+            case 0: // AGR_READY
+              // `req` is ALREADY qualified by delayed_on: ${t_request_hold} on
+              // the binary_sensor — do not re-check the hold here. in_state is
+              // the dwell in READY, which only bites right after a cycle or a
+              // fault reset. !run blocks the start if the engine is still turning.
+              if (req && !co && !run && id(in_state) >= ${t_ready}) next = 1;
+              break;
+            case 1: // AGR_CRANKING
+              if (co) next = 5;
+              else if (!req) next = 4;            // Deye signal lost — starter OFF
+              else if (run) next = 3;             // run confirmed — starter OFF
+              else if (id(in_state) >= ${t_crank}) {
+                id(attempts) += 1;
+                next = (id(attempts) >= ${attempts_max}) ? 5 : 2;
+              }
+              break;
+            case 2: // AGR_PAUSE
+              if (co) next = 5;
+              else if (run) next = 3;             // run confirmed with the starter OFF
+              else if (!req) next = 0;
+              else if (id(in_state) >= ${t_pause}) next = 1;
+              break;
+            case 3: // AGR_RUNNING
+              if (co) next = 5;
+              else if (!run) next = 5;            // run confirmation lost
+              else if (!req) next = 4;            // ignition OFF
+              break;
+            case 4: // AGR_STOPPING
+              if (!run) next = 0;
+              else if (id(in_state) >= ${t_rundown}) next = 5;
+              break;
+            case 5: // AGR_FAULT
+              // !run blocks the reset while the engine is still turning
+              if (rst && !co && !run) next = 0;
+              break;
+          }
+
+          if (next != s) {
+            ESP_LOGI("genset", "%s -> %s (attempts=%d)", NAMES[s], NAMES[next], id(attempts));
+            id(state) = next;
+            id(in_state) = 0;
+            if (next == 0) id(attempts) = 0;
+            id(apply_outputs).execute();
+            id(state_text).publish_state(NAMES[next]);
+          }
+
+text_sensor:
+  - platform: template
+    name: "Controller state"
+    id: state_text
+    update_interval: never
+
+sensor:
+  - platform: template
+    name: "Crank attempts"
+    lambda: 'return id(attempts);'
+    update_interval: 5s
+    accuracy_decimals: 0
+  - platform: template
+    name: "Time in state"
+    unit_of_measurement: s
+    lambda: 'return id(in_state);'
+    update_interval: 5s
+    accuracy_decimals: 0
+
+  # --- Deye readout over Modbus RTU (see the RS485 block above) ---
+  # NOTE: these entities BELONG TO THIS `sensor:` block. Do not open a second
+  # top-level `sensor:` block — it would silently override this one, with no
+  # parse error. The same trap already deleted all four inputs once.
+  #
+  #- platform: modbus_controller
+  #  modbus_controller_id: deye
+  #  name: "Deye bank SOC"
+  #  address: 588
+  #  register_type: holding
+  #  value_type: U_WORD
+  #  unit_of_measurement: "%"
+  #  device_class: battery
+  #  accuracy_decimals: 0
+  #
+  #- platform: modbus_controller
+  #  modbus_controller_id: deye
+  #  name: "Deye bank voltage"
+  #  address: 587
+  #  register_type: holding
+  #  value_type: U_WORD
+  #  filters: [ multiply: 0.01 ]
+  #  unit_of_measurement: V
+  #  device_class: voltage
+  #  accuracy_decimals: 2
+  #
+  #- platform: modbus_controller
+  #  modbus_controller_id: deye
+  #  name: "Deye bank power"      # positive = discharging, negative = charging
+  #  address: 590
+  #  register_type: holding
+  #  value_type: S_WORD
+  #  unit_of_measurement: W
+  #  device_class: power
+  #  accuracy_decimals: 0
+  #
+  #- platform: modbus_controller
+  #  modbus_controller_id: deye
+  #  name: "Deye PV1 power"
+  #  address: 672
+  #  register_type: holding
+  #  value_type: U_WORD
+  #  unit_of_measurement: W
+  #  device_class: power
+  #  accuracy_decimals: 0
+  #
+  #- platform: modbus_controller
+  #  modbus_controller_id: deye
+  #  name: "Deye PV2 power"
+  #  address: 673
+  #  register_type: holding
+  #  value_type: U_WORD
+  #  unit_of_measurement: W
+  #  device_class: power
+  #  accuracy_decimals: 0
+  #
+  # Phase A voltage on the GEN port AS SEEN BY THE INVERTER.
+  # An independent witness against IN-02 — the same fact measured a second way.
+  #- platform: modbus_controller
+  #  modbus_controller_id: deye
+  #  name: "Deye GEN phase A voltage"
+  #  address: 661
+  #  register_type: holding
+  #  value_type: U_WORD
+  #  filters: [ multiply: 0.1 ]
+  #  unit_of_measurement: V
+  #  device_class: voltage
+  #  accuracy_decimals: 1
+  #
+  #- platform: modbus_controller
+  #  modbus_controller_id: deye
+  #  name: "Deye GEN port power"
+  #  address: 667
+  #  register_type: holding
+  #  value_type: U_WORD
+  #  unit_of_measurement: W
+  #  device_class: power
+  #  accuracy_decimals: 0

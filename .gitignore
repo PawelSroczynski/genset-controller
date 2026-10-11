@@ -1,0 +1,13 @@
+*.png
+*.bak
+*.bak-*
+*.xlsx
+sheet.html
+_test.html
+# superseded Polish-named sources, kept locally as history
+maszyna.yaml
+sterownik-agregatu.yaml
+hybryda.yaml
+smartbob-v17.yaml
+lite-v18.yaml
+pinout.csv

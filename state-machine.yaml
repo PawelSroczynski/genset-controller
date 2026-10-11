@@ -1,0 +1,207 @@
+name: Genset controller FOGO FH9000R — SMARTBOB SM-MINI-0808R
+description: >
+  Models the GENSET ONLY. Reads the Deye G-start dry contact, cranks with an
+  attempt limit, stops the engine by shorting the ignition to ground once the
+  signal drops. No gasifier here — no blower, no gas valve, no bed state.
+  A cycle opens on the Deye signal and closes on the return to ready.
+
+  NAMING CONVENTION: states in this layer carry the AGR_ prefix (aggregate).
+  Further layers get their own: GAZ_ for the gasifier, RET_ for the retort.
+  Without it AGR_RUNNING and GAZ_RUNNING would collide once the machines
+  stand side by side — a running engine and a reactor producing gas are not
+  the same state.
+
+genset:
+  model: FOGO FH9000R
+  datasheet: https://www.fogo.pl/fh-9000-r
+  engine: Honda GX390
+  note: >-
+    8.5 kVA, 400/230 V three-phase, AVR on all three phases. The electric
+    starter, the relay start input and the battery are retrofits — the vendor
+    page does not list them, which is why the start signal has to be wired
+    rather than requested over a bus.
+
+controller:
+  model: SMARTBOB SM-MINI-0808R
+  datasheet: https://smartbob.pl/produkt/sm-mini-0808r/
+  documentation: https://smartbobautomatyka.github.io/SmartbobPageWiki/
+  templates: https://github.com/SmartbobAutomatyka/SmartbobAutomatyka-GIT/tree/main/ESPHOME/SM-MINI-0808R-V17
+  pinout: https://docs.google.com/spreadsheets/d/1f-NrrFuqd2Pu4SJJxyYbYXiO_AjEefHKa8IfUKU8CmM/edit?gid=1302523101
+
+parameters:
+  # The Deye request must be continuously ON for this long before the logic
+  # accepts it. It lives in the INPUT FILTER, not in a state: holding a signal
+  # is signal conditioning, and a state timer cannot express it — a state timer
+  # measures time in the state, which has already elapsed while the controller
+  # sat idle. Same thing as `delayed_on` on the ESPHome binary_sensor.
+  t_request_hold: 5      # s
+  # Minimum dwell in AGR_READY after a closed cycle or a fault reset, so the
+  # controller never cranks again the instant the engine has stopped.
+  # This one is correctly measured as time in the state.
+  t_ready: 5             # s
+  t_crank: 3             # s — maximum duration of a single cranking attempt
+  t_pause: 10            # s — starter rest between attempts
+  attempts_max: 3
+  t_rundown: 10          # s — time allowed for the engine to come to a stop
+
+counters:
+  attempts: 0
+
+inputs:
+  gen_request:
+    pin: IN-01
+    label: Deye start signal
+    description: >-
+      G-start dry contact, inverter terminals 1 and 2.
+      ON = genset run requested. OFF = no request.
+      The logic sees this input only after it has been held for
+      {t_request_hold} s; dropping it is immediate. Asymmetric on purpose —
+      a transient request must not start the engine, but a withdrawn request
+      must stop the cranking at once.
+    hold: t_request_hold
+  running:
+    pin: IN-02
+    label: Run confirmed
+    description: >-
+      External DIN-rail voltage monitoring relay wired to the genset output
+      phase. Its dry contact feeds IN-02.
+      ON = voltage within the working window, i.e. the genset is producing.
+    device:
+      name: e.g. Relpol RPN-.VF-A400
+      url: https://www.relpol.pl/Produkty/Przekazniki-nadzorcze/Przekazniki-nadzorcze-modulowe/Przekazniki-nadzorcze-RPN-.VF-A400
+  co_alarm:
+    pin: IN-03
+    label: CO alarm
+    description: >-
+      Alarm contact of the carbon monoxide detector in the plant room, on IN-03.
+      ON = carbon monoxide detected. The detector needs a second contact for
+      the hardwired permit chain, which stops the engine independently of
+      the controller.
+  reset:
+    pin: IN-04
+    label: Fault reset
+    description: >-
+      Momentary pushbutton in the cabinet door, on IN-04.
+      ON = pressed. Returns to OFF on release.
+    momentary: true
+
+outputs:
+  ignition:
+    pin: RELAY-01
+    label: Ignition relay
+    description: >-
+      ON = the NC contact in the kill line is open, ignition circuit live.
+      OFF = ignition shorted to ground, engine stopped.
+  starter:
+    pin: RELAY-02
+    label: Starter relay
+    description: >-
+      Drives the starter contactor coil; it does not feed the starter directly.
+      ON = contactor closed, starter cranking. OFF = contactor open.
+
+states:
+  AGR_READY:
+    x: 70
+    y: 40
+    description: >-
+      Controller powered, outputs in the safe state. Kill line shorted to
+      ground. Two independent conditions gate the start, on two different
+      clocks: the request must have been held {t_request_hold} s (input filter)
+      AND the controller must have been in this state {t_ready} s (state timer).
+      The second one matters only right after a cycle or a fault reset; once
+      the controller has stood idle it is long satisfied, and that is correct —
+      a rested engine needs no dwell. The `not running` term blocks the start
+      if the engine is somehow still turning.
+    outputs: { ignition: false, starter: false }
+    actions: { attempts: 0 }
+    transitions:
+      - to: AGR_CRANKING
+        when: gen_request and not co_alarm and not running
+        after: t_ready
+        description: Request held {t_request_hold} s and ready dwell {t_ready} s elapsed — crank
+
+  AGR_CRANKING:
+    x: 300
+    y: 40
+    description: Starter engaged. The time limit protects the bendix.
+    outputs: { ignition: true, starter: true }
+    transitions:
+      - to: AGR_FAULT
+        when: co_alarm
+        description: CO alarm during cranking
+      - to: AGR_STOPPING
+        when: not gen_request
+        description: Deye signal lost while cranking
+      - to: AGR_RUNNING
+        when: running
+        description: Run confirmed
+      - to: AGR_FAULT
+        after: t_crank
+        when: attempts >= attempts_max - 1
+        actions: { attempts: "+1" }
+        description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_crank} s — attempt limit exhausted"
+      - to: AGR_PAUSE
+        after: t_crank
+        actions: { attempts: "+1" }
+        description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_crank} s — {t_pause} s pause"
+
+  AGR_RUNNING:
+    x: 530
+    y: 40
+    description: Engine running, inverter charging the bank.
+    outputs: { ignition: true, starter: false }
+    transitions:
+      - to: AGR_FAULT
+        when: co_alarm
+        description: CO alarm with the engine running
+      - to: AGR_FAULT
+        when: not running
+        description: Run confirmation lost without a stop command — cause outside the controller
+      - to: AGR_STOPPING
+        when: not gen_request
+        description: Deye signal lost
+
+  AGR_FAULT:
+    x: 70
+    y: 170
+    fault: true
+    description: >-
+      Ignition relay OFF. Requires a manual reset. Resetting is blocked while
+      run confirmation persists — that would mean a defective kill circuit.
+    outputs: { ignition: false, starter: false }
+    transitions:
+      - to: AGR_READY
+        when: reset and not co_alarm and not running
+        description: Fault reset
+
+  AGR_PAUSE:
+    x: 300
+    y: 170
+    description: Starter thermal rest before the next attempt.
+    outputs: { ignition: true, starter: false }
+    transitions:
+      - to: AGR_FAULT
+        when: co_alarm
+        description: CO alarm between attempts
+      - to: AGR_RUNNING
+        when: running
+        description: Run confirmed with the starter OFF
+      - to: AGR_READY
+        when: not gen_request
+        description: Deye signal lost between attempts — cycle aborted
+      - to: AGR_CRANKING
+        after: t_pause
+        description: "{t_pause} s pause elapsed — next attempt"
+
+  AGR_STOPPING:
+    x: 530
+    y: 170
+    description: Ignition relay OFF — the NC contact shorts the ignition to ground.
+    outputs: { ignition: false, starter: false }
+    transitions:
+      - to: AGR_READY
+        when: not running
+        description: Run confirmation lost
+      - to: AGR_FAULT
+        after: t_rundown
+        description: "Run confirmation held {t_rundown} s after the ignition was shorted — kill circuit defective"
