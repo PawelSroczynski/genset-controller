@@ -176,12 +176,17 @@ outputs:
   ignition:
     pin: RELAY-01
     label: Ignition relay
+    # `short` is what the indicator board shows. The board has to hold ten or
+    # more relays once the gasifier and the retort arrive, so the row is one
+    # line and the full label lives in the tooltip.
+    short: IGNITION
     description: >-
       ON = the NC contact in the kill line is open, ignition circuit live.
       OFF = ignition shorted to ground, engine stopped.
   starter:
     pin: RELAY-02
     label: Starter relay
+    short: STARTER
     description: >-
       Drives the starter contactor coil; it does not feed the starter directly.
       ON = contactor closed, starter cranking. OFF = contactor open.
@@ -1306,6 +1311,8 @@ const I18N = {
       'inputs.reset.description':
         'Przycisk monostabilny w drzwiach szafy, podany na IN-04. ON = wciśnięty. Wraca do OFF po puszczeniu.',
 
+      'outputs.ignition.short': 'ZAPŁON',
+      'outputs.starter.short': 'ROZRUSZNIK',
       'outputs.ignition.label': 'Przekaźnik zapłonu',
       'outputs.ignition.description':
         'ON = styk NC w linii gaszenia otwarty, obwód zapłonu czynny. OFF = zapłon zwarty do masy, silnik zatrzymany.',
@@ -1427,7 +1434,7 @@ svg{display:block;flex:0 0 auto}
    „Stan bieżący" dostaje najwięcej szerokości, bo niesie opis stanu i listę
    przejść z opisami, czyli najdłuższą treść z tej trójki. */
 .kolumny{flex:1 1 45%;min-height:0;display:grid;
-  grid-template-columns:0.74fr 0.92fr 1.26fr 1.02fr;gap:10px}
+  grid-template-columns:0.84fr 0.9fr 1.22fr 1.0fr;gap:10px}
 /* Niskie okna: diagram schodzi do zadeklarowanej połowy i ani piksela niżej —
    ma zostać czytelny. Resztę biorą trzy karty. */
 @media(min-width:1451px) and (max-height:1020px){
@@ -1596,21 +1603,20 @@ textarea{flex:1 1 auto;min-height:300px;background:#0f151c;color:#cfe0ee;border:
 .pomiar{cursor:help}
 /* Wyjścia jako tablica kontrolek. Dwa przekaźniki, duże diody, stan słowem —
    ta karta ma się czytać z drugiego końca pokoju, a nie wymagać mrużenia oczu. */
-.wy{display:flex;align-items:center;gap:13px;padding:13px 13px;border-radius:10px;
-  background:#1a2430;border:1px solid #26333f;margin-bottom:10px;
+.wy{display:flex;align-items:center;gap:8px;padding:6px 9px;border-radius:7px;
+  background:#1a2430;border:1px solid #26333f;margin-bottom:5px;cursor:help;
   transition:background .15s,border-color .15s}
 .wy:last-child{margin-bottom:0}
-
-.dioda{width:19px;height:19px;border-radius:50%;flex:0 0 auto;
+.dioda{width:13px;height:13px;border-radius:50%;flex:0 0 auto;
   background:#27333f;border:2px solid #3a4a5c;transition:.15s}
-
-.wy-tr{flex:1 1 auto;min-width:0}
-.wy-pin{font-family:ui-monospace,monospace;font-size:9.5px;color:#8ca3b8;
+.wy-pin{font-family:ui-monospace,monospace;font-size:9px;color:#8ca3b8;
   background:#1f2a36;border:1px solid #33455a;border-radius:3px;
-  padding:1px 5px;letter-spacing:.3px}
-.wy-nazwa{font-size:12.8px;line-height:1.3;margin-top:4px;overflow-wrap:anywhere}
-.wy-stan{font-family:ui-monospace,monospace;font-size:13.5px;font-weight:700;
-  flex:0 0 auto;color:#5f7287;letter-spacing:.5px}
+  padding:1px 4px;letter-spacing:.2px;flex:0 0 auto}
+.wy-nazwa{font-family:ui-monospace,monospace;font-size:11px;font-weight:600;
+  letter-spacing:.3px;flex:1 1 auto;min-width:0;color:#cfe0ee;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wy-stan{font-family:ui-monospace,monospace;font-size:11.5px;font-weight:700;
+  flex:0 0 auto;color:#5f7287;letter-spacing:.5px;width:30px;text-align:right}
 
 /* liczniki przeniesione pod nazwę stanu — tam mają znaczenie */
 .stan-liczniki{display:flex;gap:6px 15px;flex-wrap:wrap;margin:5px 0 7px;
@@ -1673,7 +1679,7 @@ footer .jezyk button{padding:4px 8px;font-size:10.5px}
 }
 @media(min-width:1451px) and (max-height:940px){
   .stan-liczniki{font-size:10.8px;margin:3px 0 5px}
-  .wy{padding:10px 11px;margin-bottom:8px}
+  .wy{padding:5px 8px;margin-bottom:4px}
   .pomiar{padding:3px 0}
   .pom-bar{height:4px;margin-top:3px}
   .pom-et{font-size:11.8px}
@@ -2605,15 +2611,16 @@ function budujWyjscia(){
   for(const k in (M.outputs||{})){
     const o=M.outputs[k];
     const opis = TY('outputs.'+k+'.description', o.description||'');
+    const pelna=etykPinu('outputs',k);
+    const krotka=TY('outputs.'+k+'.short', o.short||pelna);
     const d=document.createElement('div'); d.className='wy';
-    if(opis) d.title=podstaw(opis);          // opis w dymku, kolumna jest wąska
+    // pełna nazwa i opis w dymku — wiersz ma być jednoliniowy, bo przekaźników
+    // będzie dziesięć, gdy dojdzie gazogenerator i retorta
+    d.title=pelna+(opis?'\n\n'+podstaw(opis):'');
     d.innerHTML=
       '<div class="dioda"></div>'+
-      '<div class="wy-tr">'+
-        (o.pin?'<span class="wy-pin">'+esc(o.pin)+'</span>':'')+
-        '<div class="wy-nazwa">'+esc(etykPinu('outputs',k))+
-        linkUrzadzenia(o,'outputs.'+k)+'</div>'+
-      '</div>'+
+      (o.pin?'<span class="wy-pin">'+esc(o.pin)+'</span>':'')+
+      '<div class="wy-nazwa">'+esc(krotka)+'</div>'+
       '<div class="wy-stan">OFF</div>';
     c.appendChild(d);
     cacheWy[k]={ wiersz:d, dioda:d.querySelector('.dioda'),
@@ -2771,7 +2778,7 @@ function odswiez(){
     c.wiersz.style.background  = v ? '#15291f' : '#1a2430';
     c.dioda.style.background   = v ? '#4fb477' : '#27333f';
     c.dioda.style.borderColor  = v ? '#8fe6b5' : '#3a4a5c';
-    c.dioda.style.boxShadow    = v ? '0 0 13px #4fb477' : 'none';
+    c.dioda.style.boxShadow    = v ? '0 0 9px #4fb477' : 'none';
     c.stan.style.color         = v ? '#4fb477' : '#5f7287';
     c.stan.textContent = v ? 'ON' : 'OFF';
   }

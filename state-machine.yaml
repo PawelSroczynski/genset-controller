@@ -167,12 +167,17 @@ outputs:
   ignition:
     pin: RELAY-01
     label: Ignition relay
+    # `short` is what the indicator board shows. The board has to hold ten or
+    # more relays once the gasifier and the retort arrive, so the row is one
+    # line and the full label lives in the tooltip.
+    short: IGNITION
     description: >-
       ON = the NC contact in the kill line is open, ignition circuit live.
       OFF = ignition shorted to ground, engine stopped.
   starter:
     pin: RELAY-02
     label: Starter relay
+    short: STARTER
     description: >-
       Drives the starter contactor coil; it does not feed the starter directly.
       ON = contactor closed, starter cranking. OFF = contactor open.
