@@ -39,12 +39,16 @@ parameters:
   # controller never cranks again the instant the engine has stopped.
   # This one is correctly measured as time in the state.
   t_ready: 5             # s
-  # Ignition must be live BEFORE the starter turns the engine over. With both
-  # relays closing together the first compression strokes can happen while the
-  # interposing relay is still settling, so the engine is turned without spark —
-  # battery spent for nothing, and an attempt wasted off a budget of three.
-  t_prestart: 1          # s — ignition on, starter still off
-  t_crank: 3             # s — maximum duration of a single cranking attempt
+  # Ignition must be live BEFORE the starter turns the engine over, or the first
+  # compression strokes can happen while the interposing relay is still settling
+  # — the engine turned without spark, battery spent, one attempt wasted.
+  # This is a property of the OUTPUT, not a state: see `delay_on` on the starter.
+  # Same reasoning as the request hold, which lives in the input filter rather
+  # than in a state timer.
+  t_prestart: 1          # s — ignition live before the starter is energised
+  # Whole attempt window: t_prestart of ignition settling plus the cranking
+  # itself, so the starter still turns for three seconds.
+  t_attempt: 4           # s
   t_pause: 10            # s — starter rest between attempts
   attempts_max: 3
   t_rundown: 10          # s — time allowed for the engine to come to a stop
@@ -202,6 +206,10 @@ outputs:
     pin: RELAY-02
     label: Starter relay
     short: STARTER
+    # Energising is held off this long after the state asks for it; dropping is
+    # immediate. The ignition relay closes first and settles, then the starter
+    # turns. Asymmetric for the same reason the request filter is.
+    delay_on: t_prestart
     # Dźwięk deklarowany w danych, nie wpisany w kod symulatora: `sound_loop`
     # gra, dopóki sygnał jest aktywny. Dzięki temu dmuchawa gazogeneratora
     # dostanie swój głos przez dopisanie jednej linii i pliku.
@@ -241,37 +249,12 @@ states:
     outputs: { ignition: false, starter: false, kill: false }
     actions: { attempts: 0 }
     transitions:
-      - to: GENS_PRESTART
+      - to: GENS_CRANKING
         when: gen_request and not co_alarm and not running
         after: t_ready
-        description: Request held {t_request_hold} s and ready dwell {t_ready} s elapsed — ignition on
-  GENS_PRESTART:
-    x: 300
-    y: 40
-    description: >-
-      Ignition relay energised, starter still open. The engine is not turning
-      yet: this second exists so that spark is live before the first
-      compression stroke. Leaving here needs no stopping sequence — nothing is
-      running, so the ignition simply drops.
-    outputs: { ignition: true, starter: false, kill: false }
-    transitions:
-      - to: GENS_FAULT
-        when: co_alarm
-        description: CO alarm before cranking
-      - to: GENS_STOPPING
-        when: kill_btn
-        description: Kill button pressed — short held {t_kill} s regardless of the press
-      - to: GENS_READY
-        when: not gen_request
-        description: Deye signal lost before the starter engaged
-      - to: GENS_RUNNING
-        when: running
-        description: Run confirmed without cranking — engine was already turning
-      - to: GENS_CRANKING
-        after: t_prestart
-        description: Ignition live {t_prestart} s — engage the starter
+        description: Request held {t_request_hold} s and ready dwell {t_ready} s elapsed — crank
   GENS_CRANKING:
-    x: 530
+    x: 300
     y: 40
     description: Starter engaged. The time limit protects the bendix.
     outputs: { ignition: true, starter: true, kill: false }
@@ -289,16 +272,16 @@ states:
         when: running
         description: Run confirmed
       - to: GENS_FAULT
-        after: t_crank
+        after: t_attempt
         when: attempts >= attempts_max - 1
         actions: { attempts: "+1" }
-        description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_crank} s — attempt limit exhausted"
+        description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_attempt} s — attempt limit exhausted"
       - to: GENS_PAUSE
-        after: t_crank
+        after: t_attempt
         actions: { attempts: "+1" }
-        description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_crank} s — {t_pause} s pause"
+        description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_attempt} s — {t_pause} s pause"
   GENS_PAUSE:
-    x: 530
+    x: 300
     y: 170
     description: Starter thermal rest before the next attempt.
     outputs: { ignition: true, starter: false, kill: false }
@@ -319,7 +302,7 @@ states:
         after: t_pause
         description: "{t_pause} s pause elapsed — next attempt"
   GENS_RUNNING:
-    x: 760
+    x: 530
     y: 40
     description: Engine running, inverter charging the bank.
     outputs: { ignition: true, starter: false, kill: false }
@@ -337,7 +320,7 @@ states:
         when: not gen_request
         description: Deye signal lost
   GENS_STOPPING:
-    x: 760
+    x: 530
     y: 170
     description: Ignition relay OFF — the NC contact shorts the ignition to ground.
     outputs: { ignition: false, starter: false, kill: true }

@@ -48,12 +48,16 @@ parameters:
   # controller never cranks again the instant the engine has stopped.
   # This one is correctly measured as time in the state.
   t_ready: 5             # s
-  # Ignition must be live BEFORE the starter turns the engine over. With both
-  # relays closing together the first compression strokes can happen while the
-  # interposing relay is still settling, so the engine is turned without spark —
-  # battery spent for nothing, and an attempt wasted off a budget of three.
-  t_prestart: 1          # s — ignition on, starter still off
-  t_crank: 3             # s — maximum duration of a single cranking attempt
+  # Ignition must be live BEFORE the starter turns the engine over, or the first
+  # compression strokes can happen while the interposing relay is still settling
+  # — the engine turned without spark, battery spent, one attempt wasted.
+  # This is a property of the OUTPUT, not a state: see `delay_on` on the starter.
+  # Same reasoning as the request hold, which lives in the input filter rather
+  # than in a state timer.
+  t_prestart: 1          # s — ignition live before the starter is energised
+  # Whole attempt window: t_prestart of ignition settling plus the cranking
+  # itself, so the starter still turns for three seconds.
+  t_attempt: 4           # s
   t_pause: 10            # s — starter rest between attempts
   attempts_max: 3
   t_rundown: 10          # s — time allowed for the engine to come to a stop
@@ -211,6 +215,10 @@ outputs:
     pin: RELAY-02
     label: Starter relay
     short: STARTER
+    # Energising is held off this long after the state asks for it; dropping is
+    # immediate. The ignition relay closes first and settles, then the starter
+    # turns. Asymmetric for the same reason the request filter is.
+    delay_on: t_prestart
     # Dźwięk deklarowany w danych, nie wpisany w kod symulatora: `sound_loop`
     # gra, dopóki sygnał jest aktywny. Dzięki temu dmuchawa gazogeneratora
     # dostanie swój głos przez dopisanie jednej linii i pliku.
@@ -250,37 +258,12 @@ states:
     outputs: { ignition: false, starter: false, kill: false }
     actions: { attempts: 0 }
     transitions:
-      - to: GENS_PRESTART
+      - to: GENS_CRANKING
         when: gen_request and not co_alarm and not running
         after: t_ready
-        description: Request held {t_request_hold} s and ready dwell {t_ready} s elapsed — ignition on
-  GENS_PRESTART:
-    x: 300
-    y: 40
-    description: >-
-      Ignition relay energised, starter still open. The engine is not turning
-      yet: this second exists so that spark is live before the first
-      compression stroke. Leaving here needs no stopping sequence — nothing is
-      running, so the ignition simply drops.
-    outputs: { ignition: true, starter: false, kill: false }
-    transitions:
-      - to: GENS_FAULT
-        when: co_alarm
-        description: CO alarm before cranking
-      - to: GENS_STOPPING
-        when: kill_btn
-        description: Kill button pressed — short held {t_kill} s regardless of the press
-      - to: GENS_READY
-        when: not gen_request
-        description: Deye signal lost before the starter engaged
-      - to: GENS_RUNNING
-        when: running
-        description: Run confirmed without cranking — engine was already turning
-      - to: GENS_CRANKING
-        after: t_prestart
-        description: Ignition live {t_prestart} s — engage the starter
+        description: Request held {t_request_hold} s and ready dwell {t_ready} s elapsed — crank
   GENS_CRANKING:
-    x: 530
+    x: 300
     y: 40
     description: Starter engaged. The time limit protects the bendix.
     outputs: { ignition: true, starter: true, kill: false }
@@ -298,16 +281,16 @@ states:
         when: running
         description: Run confirmed
       - to: GENS_FAULT
-        after: t_crank
+        after: t_attempt
         when: attempts >= attempts_max - 1
         actions: { attempts: "+1" }
-        description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_crank} s — attempt limit exhausted"
+        description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_attempt} s — attempt limit exhausted"
       - to: GENS_PAUSE
-        after: t_crank
+        after: t_attempt
         actions: { attempts: "+1" }
-        description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_crank} s — {t_pause} s pause"
+        description: "Attempt {attempts}/{attempts_max}: no run confirmation within {t_attempt} s — {t_pause} s pause"
   GENS_PAUSE:
-    x: 530
+    x: 300
     y: 170
     description: Starter thermal rest before the next attempt.
     outputs: { ignition: true, starter: false, kill: false }
@@ -328,7 +311,7 @@ states:
         after: t_pause
         description: "{t_pause} s pause elapsed — next attempt"
   GENS_RUNNING:
-    x: 760
+    x: 530
     y: 40
     description: Engine running, inverter charging the bank.
     outputs: { ignition: true, starter: false, kill: false }
@@ -346,7 +329,7 @@ states:
         when: not gen_request
         description: Deye signal lost
   GENS_STOPPING:
-    x: 760
+    x: 530
     y: 170
     description: Ignition relay OFF — the NC contact shorts the ignition to ground.
     outputs: { ignition: false, starter: false, kill: true }
@@ -2086,7 +2069,8 @@ function resetuj(){
   // migawka startowa — bez niej pierwszy tick zgłosiłby wszystkie piny jako zmienione
   poprzWe={}; for(const k in (M.inputs||{})) poprzWe[k]=!!we[k];
   poprzF={};  for(const k in (M.inputs||{})) poprzF[k]=!!weF[k];
-  poprzWy={}; const w0=wyjsciaStanu();
+  wyEf={}; opoznWy={}; krokWyjsc(0);
+  poprzWy={}; const w0=wyjsciaTeraz();
   for(const k in (M.outputs||{})) poprzWy[k]=!!w0[k];
   wszystkiePetleWyl();
   DZIENNIK.length=0; document.getElementById('log').innerHTML='';
@@ -2211,18 +2195,41 @@ function logujZmianyFiltr(){
   }
 }
 function logujZmianyWy(){
-  const wy=wyjsciaStanu();
+  const wy=wyjsciaTeraz();
   for(const k in (M.outputs||{})){
     const v=!!wy[k];
     if(poprzWy[k]!==v){ poprzWy[k]=v;
       dopisz({typ:'pin',grupa:'outputs',k:k,v:v,kl:v?'pu':'pd'});
-      graj(v?'relay-on':'relay-off', 0.42);   // styk słychać tak jak w szafie
+      graj(v?'relay-on':'relay-off', 0.85);   // styk słychać tak jak w szafie
       dzwiekPinu('outputs', k, v);
     }
   }
 }
 function jestAwaria(k){ return !!((M.states[k]||{}).fault); }
+// Wyjścia ZADEKLAROWANE przez stan — czego stan chce.
 function wyjsciaStanu(){ return (M.states[stan]||{}).outputs || {}; }
+
+// Wyjścia RZECZYWISTE — co jest na cewkach. Różnią się, gdy wyjście ma
+// `delay_on`: zapłon musi się ustalić, zanim ruszy rozrusznik. Zbocze
+// narastające czeka, opadające działa natychmiast — ta sama asymetria co
+// w filtrze wejścia, i z tego samego powodu.
+let wyEf={}, opoznWy={};
+function limitOpoznienia(k){
+  const d=((M.outputs||{})[k]||{}).delay_on;
+  if(d===undefined||d===null) return null;
+  return (typeof d==='string') ? (M.parameters||{})[d] : d;
+}
+function krokWyjsc(dt){
+  const dekl=wyjsciaStanu();
+  for(const k in (M.outputs||{})){
+    const chce=!!dekl[k], lim=limitOpoznienia(k);
+    if(lim===null||lim===undefined){ wyEf[k]=chce; opoznWy[k]=0; continue; }
+    if(!chce){ wyEf[k]=false; opoznWy[k]=0; }
+    else if(!wyEf[k]){ opoznWy[k]=(opoznWy[k]||0)+dt; if(opoznWy[k]>=lim) wyEf[k]=true; }
+  }
+  return wyEf;
+}
+function wyjsciaTeraz(){ return wyEf; }
 function opisStanu(k){ return TY('states.'+k+'.description', (M.states[k]||{}).description||''); }
 function opisPrzejscia(k,i,p){ return TY('states.'+k+'.transitions.'+i+'.description', p.description||''); }
 
@@ -2344,9 +2351,9 @@ function wszystkiePetleWyl(){ Object.keys(GRAJACE).forEach(petlaWyl); }
 function dzwiekPinu(grupa, k, v){
   if(!dzwiekWl) return;
   const o=(M[grupa]||{})[k]||{};
-  if(o.sound_loop){ v ? petlaWl(o.sound_loop, grupa==='outputs'?0.55:0.5) : petlaWyl(o.sound_loop); }
-  if(v && o.sound_on)  graj(o.sound_on, 0.55);
-  if(!v && o.sound_off) graj(o.sound_off, 0.5);
+  if(o.sound_loop){ v ? petlaWl(o.sound_loop, grupa==='outputs'?0.9:0.8) : petlaWyl(o.sound_loop); }
+  if(v && o.sound_on)  graj(o.sound_on, 0.95);
+  if(!v && o.sound_off) graj(o.sound_off, 0.9);
 }
 const SKALA=[392,440,494,523,587,659,698];   // bez półtonów, żeby się nie gryzło
 function audioGotowe(){
@@ -2376,18 +2383,18 @@ function ton(f, dlug, typ, glosno){
 function dzwiekPrzejscia(warstwa, indeks, awaria){
   if(!dzwiekWl) return;
   if(awaria){
-    if(graj('fault', 0.55)) return;
-    ton(233, 0.24, 'sine', 0.05);
-    setTimeout(()=>{ ostatniTon=0; ton(175, 0.34, 'sine', 0.045); }, 170);
+    if(graj('fault', 0.95)) return;
+    ton(233, 0.24, 'sine', 0.16);
+    setTimeout(()=>{ ostatniTon=0; ton(175, 0.34, 'sine', 0.14); }, 170);
     return;
   }
   // Zaskok nie ma osobnego dzwonka: silnik ma własny głos i sam się odzywa
   // przez `sound_on` wejścia potwierdzenia pracy.
-  if(warstwa==='GENS'){ if(graj('gens', 0.42)) return; }
-  else if(graj('deye', 0.4)) return;
+  if(warstwa==='GENS'){ if(graj('gens', 0.8)) return; }
+  else if(graj('deye', 0.7)) return;
   const f=SKALA[((indeks%SKALA.length)+SKALA.length)%SKALA.length];
-  if(warstwa==='GENS') ton(f, 0.16, 'sine', 0.055);
-  else                 ton(f/2, 0.24, 'triangle', 0.038);
+  if(warstwa==='GENS') ton(f, 0.16, 'sine', 0.17);
+  else                 ton(f/2, 0.24, 'triangle', 0.13);
 }
 function ustawDzwiek(v){
   dzwiekWl=v;
@@ -2535,9 +2542,9 @@ function stanPomiaru(k){           // 'ok' | 'warn' | 'alarm'
 }
 function modelSilnikaKrok(dt){
   if(!modelSilnika) return;
-  const zezw = !!wyjsciaStanu().ignition;
+  const zezw = !!wyjsciaTeraz().ignition;
   // potwierdzenie pracy: tylko gdy rozrusznik kręci i wylosowany czas minął
-  if (!!wyjsciaStanu().starter && !we.running && czasZaskoku!==null && wStanie>=czasZaskoku){
+  if (!!wyjsciaTeraz().starter && !we.running && czasZaskoku!==null && wStanie>=czasZaskoku){
     we.running=true;
   }
   // po zdjęciu zapłonu silnik zatrzymuje się w 1,5–2,5 s
@@ -2548,6 +2555,7 @@ function modelSilnikaKrok(dt){
 }
 function tik(dt){
   t+=dt; wStanie+=dt;
+  krokWyjsc(dt);
   modelInstalacji(dt);
   modelPomiarow(dt);
   modelSilnikaKrok(dt);
@@ -2572,7 +2580,7 @@ function tik(dt){
         cyklOstatni = (cyklStart!==null) ? t-cyklStart : null;
         cyklStart=null; cykle++;
         if (cyklOstatni!==null){ dopisz({typ:'cykl',s:cyklOstatni.toFixed(1),kl:'s'});
-          graj('cycle', 0.32); }
+          graj('cycle', 0.65); }
       }
       if (modelSilnika && !!wyjsciaStanu().starter){
         if (Math.random() < PROG_NIEUDANEJ){
@@ -2998,7 +3006,7 @@ function odswiezSynoptyke(){
       };
     }
   }
-  const praca=!!we.running, kreci=!!wyjsciaStanu().starter, zad=!!we.gen_request;
+  const praca=!!we.running, kreci=!!wyjsciaTeraz().starter, zad=!!we.gen_request;
   const mu=wszystkiePomiary().u_gen;
   const wOknie = POM.u_gen>=mu.ok_from && POM.u_gen<=mu.ok_to;
   const st=INST.stanDeye||'—';
@@ -3097,7 +3105,7 @@ function odswiez(){
   // a enumeracja arkusza nie pokazała żadnej reguły nadpisującej. Nie udało się
   // ustalić przyczyny, więc idzie inline — tak jak paski pomiarów i pasmo
   // synoptyczne, które od początku działały bez niespodzianek.
-  const wy=wyjsciaStanu();
+  const wy=wyjsciaTeraz();
   for(const k in cacheWy){
     const v=!!wy[k], c=cacheWy[k];
     c.wiersz.style.borderColor = v ? '#4fb477' : '#26333f';

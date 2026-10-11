@@ -140,10 +140,17 @@ the first bug.
 Two sequencing rules the state machine exists to enforce, neither of which a
 button can.
 
-**`GENS_PRESTART` holds the ignition live for a second before the starter
-engages.** With both relays closing together the first compression strokes can
-happen while the interposing relay is still settling — the engine turned
-without spark, battery spent, and one attempt gone off a budget of three.
+**The starter output carries `delay_on`, so the ignition is live a second
+before the starter engages.** With both relays closing together the first
+compression strokes can happen while the interposing relay is still settling —
+the engine turned without spark, battery spent, and one attempt gone off a
+budget of three.
+
+It is a property of the output, not a state of its own: a state machine should
+not grow a state to express a delay, exactly as the request hold lives in the
+input filter rather than in a state timer. `t_attempt` is therefore the whole
+attempt window, `t_prestart` of settling plus the cranking itself, so the
+starter still turns for three seconds.
 
 **`RELAY-03` shorts the ignition to ground and `GENS_STOPPING` holds it for
 `t_kill`.** A single-cylinder engine can ride through a brief short, so the

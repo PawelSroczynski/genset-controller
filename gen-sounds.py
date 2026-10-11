@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Generuje zestaw dźwięków symulatora.
+"""Generuje dźwięki INTERFEJSU. Dźwięki MASZYN bierze fetch-sounds.py.
+
+Podział jest ostry i celowy: ten skrypt nie wolno uruchamiać po tamtym,
+bo nadpisywałby nagrania syntezą. Dlatego nie generuje już rozrusznika,
+silnika ani zatrzasków — te mają własne źródło i własny skrypt.
 
 Dźwięki są PROJEKTOWANE, nie znajdowane. Powód jest praktyczny: gotowe nagrania
 CC0 do interfejsów to w większości gołe piknięcia, a te pliki trafiają na
@@ -54,69 +58,6 @@ def pasmo(x, lo, hi):
     k=max(1,int(len(m)*0.02)); m=np.convolve(m, np.ones(k)/k, mode='same')
     return np.fft.irfft(W*m, n)
 
-def rozrusznik(ms=1200):
-    """Rozrusznik kręcący zimnym jednocylindrowcem.
-
-    Trzy składniki, wszystkie z realnych wielkości: buczenie komutatora silnika
-    prądu stałego, świst zazębienia bendiksu, i — najważniejsze — MODULACJA
-    SPRĘŻANIEM. Przy ~300 obr/min jednocylindrowiec czterosuwowy sprzęga raz na
-    dwa obroty, czyli 2,5 Hz. To od tego rozrusznik brzmi jak rozrusznik,
-    a nie jak wiertarka: obroty falują, bo silnik raz po raz wchodzi na sprężanie.
-    Długość pętli to całkowita liczba cykli sprężania, inaczej słychać szew.
-    """
-    t=czas(ms); rng=np.random.default_rng(11)
-    f_kompr=2.5                       # sprężanie, Hz
-    obc=0.55+0.45*np.cos(2*np.pi*f_kompr*t)      # chwilowe obciążenie
-    obr=1.0-0.18*(obc-0.55)/0.45                 # pod obciążeniem obroty siadają
-    faza=2*np.pi*np.cumsum(70.0*obr)/SR          # 70 Hz buczenia komutatora
-    s=np.zeros_like(t)
-    for h in range(1,9):
-        s += (1.0/h)*np.sin(faza*h)
-    s*=0.45
-    s += 0.22*np.sin(2*np.pi*np.cumsum(1380.0*obr)/SR)*(0.6+0.4*np.cos(2*np.pi*f_kompr*t))
-    s += 0.30*pasmo(rng.standard_normal(len(t)), 300, 5200)
-    return s*obc
-
-def silnik(ms=2000, f_fire=25.0):
-    """GX390 pod obciążeniem: 3000 obr/min, czterosuw, więc zapłon co dwa
-    obroty = 25 Hz. Każdy zapłon to impuls wydechu — szum przez pasmo plus
-    niski ton — a nie nuta. Lekka zmienność cyklu, żeby nie brzmiało jak brzęczyk.
-    Pętla owija się modulo, więc ogon ostatniego impulsu wraca na początek
-    i szwu nie słychać."""
-    n=int(SR*ms/1000.0); out=np.zeros(n)
-    rng=np.random.default_rng(23)
-    okres=SR/f_fire
-    for i in range(int(round(ms/1000.0*f_fire))):
-        i0=int(round(i*okres)); dl=int(okres*1.6)
-        seg=np.arange(dl)/SR
-        kop=np.exp(-seg/0.013)
-        puls = pasmo(rng.standard_normal(dl), 55, 950)*kop*1.0
-        puls += np.sin(2*np.pi*92*seg)*kop*0.75
-        puls += np.sin(2*np.pi*184*seg)*np.exp(-seg/0.008)*0.30
-        g=0.92+0.10*rng.standard_normal()
-        idx=(np.arange(dl)+i0) % n                # owijanie, dla czystej pętli
-        np.add.at(out, idx, puls*g)
-    t=czas(ms)
-    out += 0.16*pasmo(rng.standard_normal(n), 450, 6500)    # wentylator, mechanika
-    out += 0.06*np.sin(2*np.pi*600*t)                        # świst prądnicy
-    return out*0.85
-
-def rozruch_zaskok(ms=1500):
-    """Kręcenie, zapłon, i narost obrotów do biegu jałowego."""
-    n=int(SR*ms/1000.0); out=np.zeros(n)
-    kr=rozrusznik(700); out[:len(kr)] += kr*0.9
-    # zapłony od 9 Hz do 25 Hz w 0,8 s — tak silnik wchodzi na obroty
-    rng=np.random.default_rng(31); t0=0.62; f=9.0
-    while t0 < ms/1000.0-0.05:
-        i0=int(t0*SR); dl=int(0.06*SR); seg=np.arange(dl)/SR
-        kop=np.exp(-seg/0.014)
-        p = pasmo(rng.standard_normal(dl), 55, 950)*kop + np.sin(2*np.pi*92*seg)*kop*0.8
-        dost=min(dl, n-i0)
-        if dost>0: out[i0:i0+dost] += p[:dost]*0.95
-        t0 += 1.0/f
-        f = min(25.0, f*1.17)
-    return out
-
 def silnik_stop(ms=1600):
     """Zapłony rzedną, obroty siadają, na końcu klaknięcie zaworów."""
     n=int(SR*ms/1000.0); out=np.zeros(n)
@@ -152,7 +93,7 @@ def poglos(x, ms=140, mix=0.11, ziarno=7):
     moc = np.sqrt(np.sum(ir**2))
     return x + mix*np.convolve(x, ir/moc, mode='full')[:len(x)]
 
-def zapisz(nazwa, x, szczyt_db=-14.0, wyc_ms=12, petla=False):
+def zapisz(nazwa, x, szczyt_db=-7.0, wyc_ms=12, petla=False):
     # Pętla nie może dostać ani pogłosu, ani wygaszenia na końcu: jedno i drugie
     # robi dziurę w miejscu zapętlenia, którą słychać jako regularny klik.
     if not petla:
@@ -176,18 +117,6 @@ def zapisz(nazwa, x, szczyt_db=-14.0, wyc_ms=12, petla=False):
 # --------------------------------------------------------------------
 ZESTAW = {}
 
-# Przekaźnik załącza: ostry transjent styku + krótkie uderzenie kotwicy,
-# a 11 ms później ciche dosiadanie zwory.
-ZESTAW['relay-on'] = polacz(
-    (0,  trzask(70, 2.0, 1800, 6500, 1.00, 1)),
-    (0,  ton(190, 90, 22, 0.42)),
-    (11, trzask(40, 1.6, 1200, 4000, 0.30, 2)),
-)
-# Przekaźnik odpada: ciszej i niżej — zwolnienie zawsze jest miększe od zwarcia.
-ZESTAW['relay-off'] = polacz(
-    (0, trzask(55, 2.6, 700, 3200, 0.70, 3)),
-    (0, ton(140, 70, 18, 0.30)),
-)
 # Przejście stanu agregatu: czysty dzwon, krótki.
 ZESTAW['gens'] = dzwon(660, 420, 170, [(1,1.0,1.0),(2,0.34,0.55),(3,0.12,0.35)], 0.9)
 # Przejście stanu falownika: oktawę niżej, lekko nieharmoniczny partial —
@@ -224,19 +153,13 @@ def zapisz_petle(nazwa, x, szczyt_db=-17.0, sr_out=22050):
         w.writeframes((xi*32767).astype('<i2').tobytes())
     return plik, n_out/float(sr_out)
 
-# Maszyny mają własny głos i grają PĘTLĄ, dopóki trwa stan.
-PETLE = {
-    'starter': rozrusznik(1200),      # 3 pełne cykle sprężania
-    'engine':  silnik(2000, 25.0),    # 50 zapłonów, równo
-}
-ZESTAW['engine-start'] = rozruch_zaskok(1500)
-ZESTAW['engine-stop']  = silnik_stop(1600)
+# engine-stop zostaje syntezowany: nagrania samego ZATRZYMANIA silnika nie
+# znalazłem w domenie publicznej, a w źródle, z którego bierzemy resztę,
+# samochód odjeżdża, zamiast gasnąć.
+ZESTAW['engine-stop'] = silnik_stop(1600)
 
 if __name__ == '__main__':
     os.makedirs(KAT, exist_ok=True)
     for nazwa, sygnal in ZESTAW.items():
         plik, dl = zapisz(nazwa, sygnal)
         print('  %-13s %5.0f ms  %6d B' % (nazwa, dl*1000, os.path.getsize(plik)))
-    for nazwa, sygnal in PETLE.items():
-        plik, dl = zapisz_petle(nazwa, sygnal)
-        print('  %-13s %5.0f ms  %6d B  PETLA' % (nazwa, dl*1000, os.path.getsize(plik)))

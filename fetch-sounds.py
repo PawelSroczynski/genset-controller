@@ -97,11 +97,11 @@ if __name__ == '__main__':
     # do 14,5 s krzątanina, 14,9–16,1 kręcenie (jasność ~1,2 kHz), od 16,1
     # zaskok i spadek jasności do ~300 Hz, 17,6–19,6 równy bieg jałowy.
     WYCINKI = [
-        ('relay-on',     dip,  0.12, 0.46, 'mp3', -13.0),
-        ('relay-off',    dip,  2.00, 2.42, 'mp3', -14.0),
-        ('engine-start', auto, 14.85, 17.60, 'mp3', -14.0),
-        ('starter',      auto, 14.95, 16.05, 'wav', -17.0),
-        ('engine',       auto, 17.60, 19.75, 'wav', -18.0),
+        ('relay-on',     dip,  0.12, 0.46, 'mp3',  -6.0),
+        ('relay-off',    dip,  2.00, 2.42, 'mp3',  -7.0),
+        ('engine-start', auto, 14.85, 17.60, 'mp3',  -7.0),
+        ('starter',      auto, 14.95, 16.05, 'wav', -10.0),
+        ('engine',       auto, 17.60, 19.75, 'wav', -12.0),
     ]
     for nazwa, zrodlo, od, do, fmt, db in WYCINKI:
         x = wczytaj(zrodlo, od, do)
