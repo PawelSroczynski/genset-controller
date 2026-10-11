@@ -1145,7 +1145,7 @@ const I18N = {
       'link.config':      'configuration',
       'link.github':      'repository on GitHub',
       'card.inputs':      'Inputs',
-      'card.outputs':     'Outputs and counters',
+      'card.outputs':     'Outputs',
       'card.meas':        'Measurements',
       'card.state':       'Current state',
       'card.log':         'Event log',
@@ -1192,7 +1192,7 @@ const I18N = {
 
       'syn.engine':       'engine',
       'syn.phase':        'phase',
-      'syn.deye':         'Deye',
+      'syn.deye':         'Deye status',
       'syn.bank':         'bank',
       'syn.load':         'load',
       'syn.running':      'RUN',
@@ -1227,7 +1227,7 @@ const I18N = {
       'link.config':      'konfiguracja',
       'link.github':      'repozytorium na GitHubie',
       'card.inputs':      'Wejścia',
-      'card.outputs':     'Wyjścia i liczniki',
+      'card.outputs':     'Wyjścia',
       'card.meas':        'Pomiary',
       'card.state':       'Stan bieżący',
       'card.log':         'Dziennik zdarzeń',
@@ -1274,7 +1274,7 @@ const I18N = {
 
       'syn.engine':       'silnik',
       'syn.phase':        'faza',
-      'syn.deye':         'Deye',
+      'syn.deye':         'status Deye',
       'syn.bank':         'bank',
       'syn.load':         'odbiory',
       'syn.running':      'PRACA',
@@ -1594,6 +1594,28 @@ textarea{flex:1 1 auto;min-height:300px;background:#0f151c;color:#cfe0ee;border:
 .pom-bar{height:5px;background:#1d2733;border-radius:3px;margin-top:5px;overflow:hidden}
 .pom-fill{height:100%;border-radius:3px;transition:width .12s linear,background .2s}
 .pomiar{cursor:help}
+/* Wyjścia jako tablica kontrolek. Dwa przekaźniki, duże diody, stan słowem —
+   ta karta ma się czytać z drugiego końca pokoju, a nie wymagać mrużenia oczu. */
+.wy{display:flex;align-items:center;gap:13px;padding:13px 13px;border-radius:10px;
+  background:#1a2430;border:1px solid #26333f;margin-bottom:10px;
+  transition:background .15s,border-color .15s}
+.wy:last-child{margin-bottom:0}
+
+.dioda{width:19px;height:19px;border-radius:50%;flex:0 0 auto;
+  background:#27333f;border:2px solid #3a4a5c;transition:.15s}
+
+.wy-tr{flex:1 1 auto;min-width:0}
+.wy-pin{font-family:ui-monospace,monospace;font-size:9.5px;color:#8ca3b8;
+  background:#1f2a36;border:1px solid #33455a;border-radius:3px;
+  padding:1px 5px;letter-spacing:.3px}
+.wy-nazwa{font-size:12.8px;line-height:1.3;margin-top:4px;overflow-wrap:anywhere}
+.wy-stan{font-family:ui-monospace,monospace;font-size:13.5px;font-weight:700;
+  flex:0 0 auto;color:#5f7287;letter-spacing:.5px}
+
+/* liczniki przeniesione pod nazwę stanu — tam mają znaczenie */
+.stan-liczniki{display:flex;gap:6px 15px;flex-wrap:wrap;margin:5px 0 7px;
+  font-family:ui-monospace,monospace;font-size:11.5px;color:#7f94a8}
+.stan-liczniki b{color:var(--amber);font-weight:700}
 /* sterowanie instalacją w karcie wejść */
 .wiersz.dzial{border-top:1px dashed #44556a;border-bottom:none;padding-top:11px;margin-top:9px}
 .wiersz.dzial .etyk b{font-size:10.5px;letter-spacing:1.1px;text-transform:uppercase;color:var(--amber)}
@@ -1650,6 +1672,8 @@ footer .jezyk button{padding:4px 8px;font-size:10.5px}
   .przej small{line-height:1.3}
 }
 @media(min-width:1451px) and (max-height:940px){
+  .stan-liczniki{font-size:10.8px;margin:3px 0 5px}
+  .wy{padding:10px 11px;margin-bottom:8px}
   .pomiar{padding:3px 0}
   .pom-bar{height:4px;margin-top:3px}
   .pom-et{font-size:11.8px}
@@ -1682,10 +1706,9 @@ footer .jezyk button{padding:4px 8px;font-size:10.5px}
 
   <div class="kolumny">
     <div class="karta">
-      <h2 data-i18n="card.outputs">Outputs and counters</h2>
+      <h2 data-i18n="card.outputs">Outputs</h2>
       <div class="tresc">
         <div id="wyjscia"></div>
-        <div id="liczniki" style="margin-top:10px"></div>
       </div>
     </div>
 
@@ -1698,6 +1721,7 @@ footer .jezyk button{padding:4px 8px;font-size:10.5px}
       <h2 data-i18n="card.state">Current state</h2>
       <div class="tresc">
         <div class="stan-teraz" id="stanNazwa">—</div>
+        <div class="stan-liczniki" id="liczniki"></div>
         <div class="stan-opis" id="stanOpis"></div>
         <div id="przejscia" style="margin-top:10px"></div>
       </div>
@@ -2581,14 +2605,19 @@ function budujWyjscia(){
   for(const k in (M.outputs||{})){
     const o=M.outputs[k];
     const opis = TY('outputs.'+k+'.description', o.description||'');
-    // Opis w dymku — ta kolumna jest wąska, a treść zostaje w YAML-u.
-    // Wejścia mają opisy pod spodem, bo stoją na pełnej wysokości i mają miejsce.
-    const d=document.createElement('div'); d.className='wiersz';
-    if(opis) d.title=podstaw(opis);
-    d.innerHTML='<div class="etyk">'+(o.pin?'<span class="pin">'+esc(o.pin)+'</span> ':'')+
-      esc(etykPinu('outputs',k))+linkUrzadzenia(o,'outputs.'+k)+'</div>'+
-      '<div class="lampka"></div>';
-    c.appendChild(d); cacheWy[k]=d.querySelector('.lampka');
+    const d=document.createElement('div'); d.className='wy';
+    if(opis) d.title=podstaw(opis);          // opis w dymku, kolumna jest wąska
+    d.innerHTML=
+      '<div class="dioda"></div>'+
+      '<div class="wy-tr">'+
+        (o.pin?'<span class="wy-pin">'+esc(o.pin)+'</span>':'')+
+        '<div class="wy-nazwa">'+esc(etykPinu('outputs',k))+
+        linkUrzadzenia(o,'outputs.'+k)+'</div>'+
+      '</div>'+
+      '<div class="wy-stan">OFF</div>';
+    c.appendChild(d);
+    cacheWy[k]={ wiersz:d, dioda:d.querySelector('.dioda'),
+                 stan:d.querySelector('.wy-stan') };
   }
 }
 let cachePom=null;
@@ -2681,13 +2710,13 @@ function odswiezSynoptyke(){
 function budujLiczniki(){
   const cl=document.getElementById('liczniki'); cl.innerHTML=''; cacheLic={};
   for(const k in lic){
-    const d=document.createElement('div'); d.className='wiersz';
-    d.innerHTML='<div class="etyk">'+esc(TY('counters.'+k,k))+'</div><div class="licznik"></div>';
-    cl.appendChild(d); cacheLic[k]=d.querySelector('.licznik');
+    const sp=document.createElement('span');
+    sp.innerHTML=esc(TY('counters.'+k,k))+' <b></b>';
+    cl.appendChild(sp); cacheLic[k]=sp.querySelector('b');
   }
-  const d=document.createElement('div'); d.className='wiersz';
-  d.innerHTML='<div class="etyk">'+esc(T('counter.time'))+'</div><div class="licznik"></div>';
-  cl.appendChild(d); cacheLic.__czas=d.querySelector('.licznik');
+  const sp=document.createElement('span');
+  sp.innerHTML=esc(T('counter.time'))+' <b></b>';
+  cl.appendChild(sp); cacheLic.__czas=sp.querySelector('b');
 }
 function budujPrzejscia(){
   const pc=document.getElementById('przejscia'); pc.innerHTML='';
@@ -2730,13 +2759,31 @@ function odswiez(){
   }
 
   if(!cacheWy) budujWyjscia();
+  // Kolory ustawiane STYLEM INLINE. Przy klasach `background` z reguły `.wy.on`
+  // nie wchodził, choć `border-color` i `box-shadow` z TEJ SAMEJ reguły wchodziły,
+  // a enumeracja arkusza nie pokazała żadnej reguły nadpisującej. Nie udało się
+  // ustalić przyczyny, więc idzie inline — tak jak paski pomiarów i pasmo
+  // synoptyczne, które od początku działały bez niespodzianek.
   const wy=wyjsciaStanu();
-  for(const k in cacheWy) cacheWy[k].classList.toggle('on', !!wy[k]);
+  for(const k in cacheWy){
+    const v=!!wy[k], c=cacheWy[k];
+    c.wiersz.style.borderColor = v ? '#4fb477' : '#26333f';
+    c.wiersz.style.background  = v ? '#15291f' : '#1a2430';
+    c.dioda.style.background   = v ? '#4fb477' : '#27333f';
+    c.dioda.style.borderColor  = v ? '#8fe6b5' : '#3a4a5c';
+    c.dioda.style.boxShadow    = v ? '0 0 13px #4fb477' : 'none';
+    c.stan.style.color         = v ? '#4fb477' : '#5f7287';
+    c.stan.textContent = v ? 'ON' : 'OFF';
+  }
 
   odswiezPomiary();
   odswiezSynoptyke();
   if(!cacheLic) budujLiczniki();
-  for(const k in lic) if(cacheLic[k]) cacheLic[k].textContent=lic[k];
+  // licznik prób pokazany jako x/limit — sama liczba nie mówi, ile zostało
+  const limit=(M.parameters||{}).attempts_max;
+  for(const k in lic) if(cacheLic[k])
+    cacheLic[k].textContent = (k==='attempts' && limit!==undefined)
+      ? (lic[k]+'/'+limit) : lic[k];
   cacheLic.__czas.textContent=wStanie.toFixed(1)+' s';
 
   if(warstwa!=='AGR'){
