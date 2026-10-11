@@ -1510,7 +1510,9 @@ svg{display:block;flex:0 0 auto}
 .lampka.alarm.on{background:var(--czerwony);box-shadow:0 0 9px var(--czerwony)}
 .licznik{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;color:var(--amber)}
 .log{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.2px;line-height:1.5}
-.log div{padding:0;margin:0 0 5px;line-height:1.3;white-space:pre-wrap}
+.log div{padding:2px 5px;margin:0;line-height:1.34;white-space:pre-wrap;border-radius:3px}
+/* #1b2530 to DOKŁADNIE tło karty — pierwsze podejście dało pasy niewidoczne */
+.log div.par{background:#222e3b}
 .log div:last-child{margin-bottom:0}
 .log .t{color:var(--szary)}
 .log .s{color:var(--akcent);font-weight:600}
@@ -2009,6 +2011,10 @@ function resetuj(){
 //  tekstu dziesięć razy na sekundę.
 // ---------------------------------------------------------------------
 const DZIENNIK=[], LIMIT_DZ=500;
+// Numer rosnący, nie pozycja na liście. Wpisy dochodzą OD GÓRY, więc przy
+// pasach opartych o nth-child parzystość przeskakiwałaby przy każdym zdarzeniu
+// i całe tło migałoby. Numer przypisany raz zostaje z wpisem na zawsze.
+let nrWpisu=0;
 function migawka(){ return Object.assign({}, lic, M?M.parameters:{}); }
 function podstawZ(s, snap){
   return String(s).replace(/\{(\w+)\}/g,(m,k)=> (snap&&snap[k]!==undefined) ? snap[k] : m);
@@ -2054,16 +2060,18 @@ function tekstDziennika(){
   return DZIENNIK.map(e=>e.t.toFixed(1).padEnd(7)+tekstWpisu(e)).join('\n');
 }
 function dopisz(e){
-  e.t=t;
+  e.t=t; e.nr=++nrWpisu;
   DZIENNIK.unshift(e); if(DZIENNIK.length>LIMIT_DZ) DZIENNIK.length=LIMIT_DZ;
   const el=document.getElementById('log');
-  const d=document.createElement('div'); d.innerHTML=wierszDz(e);
+  const d=document.createElement('div');
+  if(e.nr%2) d.className='par';
+  d.innerHTML=wierszDz(e);
   el.insertBefore(d, el.firstChild); el.scrollTop=0;
   while(el.childNodes.length>LIMIT_DZ) el.removeChild(el.lastChild);
 }
 function rysujDziennik(){        // pełna przebudowa — tylko przy zmianie języka
   const el=document.getElementById('log');
-  el.innerHTML=DZIENNIK.map(e=>'<div>'+wierszDz(e)+'</div>').join('');
+  el.innerHTML=DZIENNIK.map(e=>'<div'+(e.nr%2?' class="par"':'')+'>'+wierszDz(e)+'</div>').join('');
   el.scrollTop=0;
 }
 function podstaw(s){
@@ -2109,7 +2117,9 @@ function logujZmianyWy(){
   for(const k in (M.outputs||{})){
     const v=!!wy[k];
     if(poprzWy[k]!==v){ poprzWy[k]=v;
-      dopisz({typ:'pin',grupa:'outputs',k:k,v:v,kl:v?'pu':'pd'}); }
+      dopisz({typ:'pin',grupa:'outputs',k:k,v:v,kl:v?'pu':'pd'});
+      graj(v?'relayOn':'relayOff', 0.42);     // styk słychać tak jak w szafie
+    }
   }
 }
 function jestAwaria(k){ return !!((M.states[k]||{}).fault); }
@@ -2158,6 +2168,34 @@ function resetPomiary(){
 //  silnika, który nie rozpoznaje stanów po nazwie.
 // =====================================================================
 let AUDIO=null, dzwiekWl=false, ostatniTon=0;
+// Pliki mp3 są projektowane (gen-sounds.py), nie znalezione — dzięki temu nie
+// ciągną za sobą cudzej licencji na publiczne repo i dają się odtworzyć ze
+// skryptu. Synteza niżej zostaje jako zapas: gdyby katalog sounds/ nie dojechał
+// albo przeglądarka odmówiła, dźwięk nadal jest, tylko prostszy.
+const DZW={};
+function wczytajDzwieki(){
+  const m={gens:'gens', deye:'deye', fault:'fault', running:'running',
+           cycle:'cycle', relayOn:'relay-on', relayOff:'relay-off'};
+  for(const k in m){
+    const a=new Audio('sounds/'+m[k]+'.mp3');
+    a.preload='auto';
+    const w={el:a, ok:true};
+    a.addEventListener('error', ()=>{ w.ok=false; });
+    DZW[k]=w;
+  }
+}
+function graj(k, glosno){
+  if(!dzwiekWl) return false;
+  const w=DZW[k];
+  if(!w || !w.ok) return false;
+  try{
+    const a=w.el.cloneNode();
+    a.volume=Math.max(0, Math.min(1, glosno===undefined?0.5:glosno));
+    const pr=a.play();
+    if(pr && pr.catch) pr.catch(()=>{ w.ok=false; });
+    return true;
+  }catch(e){ w.ok=false; return false; }
+}
 const SKALA=[392,440,494,523,587,659,698];   // bez półtonów, żeby się nie gryzło
 function audioGotowe(){
   if(!AUDIO){
@@ -2183,20 +2221,27 @@ function ton(f, dlug, typ, glosno){
   o.connect(g); g.connect(AUDIO.destination);
   o.start(t0); o.stop(t0+(dlug||0.18)+0.03);
 }
-function dzwiekPrzejscia(warstwa, indeks, awaria){
+function dzwiekPrzejscia(warstwa, indeks, awaria, zaskok){
   if(!dzwiekWl) return;
-  if(awaria){                                  // dwa tony w dół, nadal cicho
+  if(awaria){
+    if(graj('fault', 0.55)) return;
     ton(233, 0.24, 'sine', 0.05);
     setTimeout(()=>{ ostatniTon=0; ton(175, 0.34, 'sine', 0.045); }, 170);
     return;
   }
+  if(warstwa==='GENS'){
+    // „zaskok" wyprowadzony z WYJŚĆ, nie z nazwy stanu: rozrusznik zwolniony,
+    // zapłon dalej czynny. Dzięki temu żadna warstwa nie musi znać nazw.
+    if(zaskok && graj('running', 0.5)) return;
+    if(graj('gens', 0.45)) return;
+  } else if(graj('deye', 0.4)) return;
   const f=SKALA[((indeks%SKALA.length)+SKALA.length)%SKALA.length];
   if(warstwa==='GENS') ton(f, 0.16, 'sine', 0.055);
-  else                ton(f/2, 0.24, 'triangle', 0.038);   // Deye niżej i miękcej
+  else                 ton(f/2, 0.24, 'triangle', 0.038);
 }
 function ustawDzwiek(v){
   dzwiekWl=v;
-  if(v) audioGotowe();
+  if(v){ audioGotowe(); if(!Object.keys(DZW).length) wczytajDzwieki(); }
   const b=document.getElementById('bDzwiek');
   if(b){ b.classList.toggle('gra', v); b.textContent = v ? '♪' : '♪';
          b.title=T(v?'sound.on':'sound.off'); }
@@ -2369,13 +2414,19 @@ function tik(dt){
       // migawka PO zastosowaniu akcji — opis „Próba {attempts}/{attempts_max}"
       // ma pokazywać licznik już zinkrementowany
       dopisz({typ:'przejscie',z:poprz,cel:stan,i:i,snap:migawka(),kl:kl});
-      dzwiekPrzejscia('GENS', Object.keys(M.states).indexOf(stan), jestAwaria(stan));
+      // Zaskok: rozrusznik zwolniony, zapłon dalej czynny ORAZ potwierdzenie
+      // pracy na wejściu. Bez tego ostatniego warunku nieudana próba
+      // (CRANKING -> PAUSE) wygląda identycznie i grała dźwięk sukcesu.
+      const wyP=(M.states[poprz]||{}).outputs||{}, wyN=(M.states[stan]||{}).outputs||{};
+      dzwiekPrzejscia('GENS', Object.keys(M.states).indexOf(stan), jestAwaria(stan),
+                      !!(wyP.starter && !wyN.starter && wyN.ignition && we.running));
       zastosujAkcje((M.states[stan]||{}).actions);
       if (poprz===stanIdle && stan!==stanIdle) { cyklStart=t; }
       if (poprz!==stanIdle && stan===stanIdle) {
         cyklOstatni = (cyklStart!==null) ? t-cyklStart : null;
         cyklStart=null; cykle++;
-        if (cyklOstatni!==null) dopisz({typ:'cykl',s:cyklOstatni.toFixed(1),kl:'s'});
+        if (cyklOstatni!==null){ dopisz({typ:'cykl',s:cyklOstatni.toFixed(1),kl:'s'});
+          graj('cycle', 0.35); }
       }
       if (modelSilnika && !!wyjsciaStanu().starter){
         if (Math.random() < PROG_NIEUDANEJ){
