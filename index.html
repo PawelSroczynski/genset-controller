@@ -56,6 +56,81 @@ parameters:
 counters:
   attempts: 0
 
+# =====================================================================
+#  MEASUREMENTS — analogue quantities the simulator models and displays.
+#
+#  None of these is an input to the state machine. They exist because a state
+#  name alone does not tell you whether the plant is healthy, and because two
+#  of them explain limits that otherwise look arbitrary:
+#  `u_gen` is the quantity the IN-02 voltage relay actually watches, and
+#  `u_batt` is why cranking has an attempt budget at all.
+#
+#  `model` names the behaviour the simulator implements for each one.
+# =====================================================================
+measurements:
+  u_gen:
+    label: Genset phase voltage
+    unit: V
+    min: 0
+    max: 440
+    ok_from: 360
+    ok_to: 420
+    model: gen_voltage
+    description: >-
+      What the DIN-rail voltage monitoring relay on IN-02 measures. The relay
+      closes its contact inside the working window, and that contact is the
+      only proof the controller has that the engine is actually producing.
+  t_engine:
+    label: Engine temperature
+    unit: °C
+    min: 0
+    max: 120
+    warn_above: 95
+    alarm_above: 110
+    model: engine_temp
+    description: >-
+      Air-cooled GX390. Climbs under load, falls when stopped. Below 40 °C is
+      where a choke would be needed — which this controller does not yet have.
+  u_batt:
+    label: Starter battery
+    unit: V
+    min: 8
+    max: 15
+    warn_below: 10.5
+    alarm_below: 9.5
+    model: starter_battery
+    description: >-
+      Sags hard while the starter turns and only partly recovers between
+      attempts. THIS IS WHY THE ATTEMPT LIMIT EXISTS: three attempts is a
+      budget, not a formality. Watch it fall across a failed start cycle.
+  soc:
+    label: Bank SOC
+    unit: "%"
+    min: 0
+    max: 100
+    warn_below: 25
+    model: bank_soc
+    description: >-
+      Read from the Deye over Modbus, register 588. Falls on island load,
+      rises while the genset charges. Informational only — the state machine
+      acts on the G-start contact, not on SOC.
+  p_pv:
+    label: PV power
+    unit: W
+    min: 0
+    max: 4320
+    model: pv_power
+    description: 8 x JA Solar JAM72D30-540/MB, 4.32 kWp on the barn.
+
+# Energy chain shown in the synoptic bar, left to right.
+synoptic:
+  - { id: request, label: request }
+  - { id: engine,  label: engine }
+  - { id: phase,   label: phase }
+  - { id: deye,    label: Deye GEN }
+  - { id: bank,    label: bank }
+  - { id: load,    label: load }
+
 inputs:
   gen_request:
     pin: IN-01
@@ -911,6 +986,7 @@ const I18N = {
       'link.github':      'repository on GitHub',
       'card.inputs':      'Inputs',
       'card.outputs':     'Outputs and counters',
+      'card.meas':        'Measurements',
       'card.state':       'Current state',
       'card.log':         'Event log',
       'modal.title':      'State machine definition',
@@ -935,6 +1011,17 @@ const I18N = {
       'layer.gaz.title':  'Interworking: genset, gasifier and retort on one diagram',
       'shared.label':     'shared, above the layers',
       'word.phase':       'same vessel, phase handover',
+      'syn.request':      'request',
+      'syn.engine':       'engine',
+      'syn.phase':        'phase',
+      'syn.deye':         'Deye GEN',
+      'syn.bank':         'bank',
+      'syn.load':         'load',
+      'syn.running':      'RUN',
+      'syn.cranking':     'CRANK',
+      'syn.stopped':      'STOP',
+      'syn.fromGen':      'GENSET',
+      'syn.fromBank':     'BANK',
       'word.inventory':   'inventory, not a signal',
       'word.missing':     'to be established',
       'err.yaml':         'YAML error:',
@@ -963,6 +1050,7 @@ const I18N = {
       'link.github':      'repozytorium na GitHubie',
       'card.inputs':      'Wejścia',
       'card.outputs':     'Wyjścia i liczniki',
+      'card.meas':        'Pomiary',
       'card.state':       'Stan bieżący',
       'card.log':         'Dziennik zdarzeń',
       'modal.title':      'Definicja maszyny stanów',
@@ -987,6 +1075,17 @@ const I18N = {
       'layer.gaz.title':  'Współdziałanie: agregat, gazogenerator i retorta na jednym schemacie',
       'shared.label':     'wspólne, ponad warstwami',
       'word.phase':       'to samo urządzenie, zmiana fazy',
+      'syn.request':      'żądanie',
+      'syn.engine':       'silnik',
+      'syn.phase':        'faza',
+      'syn.deye':         'Deye GEN',
+      'syn.bank':         'bank',
+      'syn.load':         'odbiory',
+      'syn.running':      'PRACA',
+      'syn.cranking':     'ROZRUCH',
+      'syn.stopped':      'STÓJ',
+      'syn.fromGen':      'AGREGAT',
+      'syn.fromBank':     'BANK',
       'word.inventory':   'zapas, nie sygnał',
       'word.missing':     'do ustalenia',
       'err.yaml':         'Błąd YAML:',
@@ -1019,6 +1118,21 @@ const I18N = {
         'Steruje cewką stycznika rozrusznika, nie zasila rozrusznika bezpośrednio. ON = stycznik załączony, rozrusznik kręci. OFF = stycznik rozwarty.',
 
       'counters.attempts': 'próby',
+
+      'measurements.u_gen.label': 'Napięcie fazy agregatu',
+      'measurements.u_gen.description':
+        'To mierzy przekaźnik nadzoru napięcia na IN-02. Zamyka styk w oknie roboczym, a ten styk jest jedynym dowodem, jaki sterownik ma na to, że silnik faktycznie produkuje.',
+      'measurements.t_engine.label': 'Temperatura silnika',
+      'measurements.t_engine.description':
+        'GX390 chłodzony powietrzem. Rośnie pod obciążeniem, opada po zatrzymaniu. Poniżej 40 °C potrzebne byłoby ssanie — którego ten sterownik jeszcze nie ma.',
+      'measurements.u_batt.label': 'Akumulator rozrusznika',
+      'measurements.u_batt.description':
+        'Zapada mocno przy kręceniu i wraca tylko częściowo między próbami. TO JEST POWÓD, DLA KTÓREGO ISTNIEJE LIMIT PRÓB: trzy próby to budżet, nie formalność. Popatrz, jak schodzi przez nieudany cykl rozruchu.',
+      'measurements.soc.label': 'SOC banku',
+      'measurements.soc.description':
+        'Odczyt z Deye po Modbusie, rejestr 588. Spada pod odbiorami wyspy, rośnie gdy agregat ładuje. Tylko informacyjnie — maszyna stanów działa na styku G-start, nie na SOC.',
+      'measurements.p_pv.label': 'Moc PV',
+      'measurements.p_pv.description': '8 × JA Solar JAM72D30-540/MB, 4,32 kWp na stodole.',
 
       'states.AGR_READY.description':
         'Sterownik zasilany, wyjścia w stanie bezpiecznym. Linia gaszenia zwarta do masy. Start blokują dwa niezależne warunki na dwóch różnych zegarach: żądanie musi być przytrzymane {t_request_hold} s (filtr wejścia) ORAZ sterownik musi stać w tym stanie {t_ready} s (zegar stanu). Drugi warunek liczy się tylko zaraz po cyklu albo po skasowaniu awarii; gdy sterownik już postał, jest dawno spełniony — i tak ma być, wypoczęty silnik nie potrzebuje postoju. Warunek `not running` blokuje start, jeśli silnik z jakiegoś powodu nadal chodzi.',
@@ -1111,12 +1225,12 @@ svg{display:block;flex:0 0 auto}
    „Stan bieżący" dostaje najwięcej szerokości, bo niesie opis stanu i listę
    przejść z opisami, czyli najdłuższą treść z tej trójki. */
 .kolumny{flex:1 1 45%;min-height:0;display:grid;
-  grid-template-columns:1fr 1.2fr 1.05fr;gap:12px}
+  grid-template-columns:0.74fr 0.92fr 1.26fr 1.02fr;gap:10px}
 /* Niskie okna: diagram schodzi do zadeklarowanej połowy i ani piksela niżej —
    ma zostać czytelny. Resztę biorą trzy karty. */
 @media(min-width:1451px) and (max-height:1020px){
-  .diagram{flex:1 1 53%}
-  .kolumny{flex:1 1 47%}
+  .diagram{flex:1 1 50%}
+  .kolumny{flex:1 1 50%}
 }
 /* Węższe ekrany: ograniczeniem schematu przestaje być wysokość, a staje się
    szerokość — jest bardzo szeroki. Kolumna wejść oddaje wtedy trochę miejsca. */
@@ -1124,6 +1238,11 @@ svg{display:block;flex:0 0 auto}
   main{grid-template-columns:1fr 452px}
 }
 @media(min-width:1451px) and (max-height:940px){
+  .diagram{flex:1 1 46%}
+  .kolumny{flex:1 1 54%}
+  .synoptyka{padding:3px 7px}
+  .syn{padding:2px 7px}
+  .pomiar{padding:5px 0}
   .wiersz{padding:7px 0}
   .etyk small{font-size:10.6px;line-height:1.42}
   .przej{font-size:11.2px;padding:5px 7px;margin-bottom:4px}
@@ -1256,6 +1375,25 @@ textarea{flex:1 1 auto;min-height:300px;background:#0f151c;color:#cfe0ee;border:
   background:#2a2208;border:1px solid #5a4a12;border-radius:4px;padding:2px 7px;display:none}
 .szk-plakietka.widac{display:inline-block}
 .przej .brak{color:#e0a14b;display:block;margin-top:2px}
+/* pasmo synoptyczne — łańcuch energii, od żądania do odbiorów */
+.synoptyka{flex:0 0 auto;display:flex;align-items:stretch;gap:5px;flex-wrap:wrap;
+  background:var(--panel);border:1px solid var(--linia);border-radius:10px;padding:5px 8px}
+.syn{flex:1 1 92px;min-width:84px;background:#1a2430;border:1.5px solid #26333f;
+  border-radius:7px;padding:3px 8px;text-align:center;transition:background .15s,border-color .15s}
+.syn-et{font-size:9px;letter-spacing:1px;text-transform:uppercase;color:#6f8296}
+.syn-w{font-family:ui-monospace,monospace;font-size:12.5px;font-weight:700;color:var(--tekst);margin-top:0}
+.syn-strz{align-self:center;color:#3c4d63;font-size:13px;flex:0 0 auto}
+/* pomiary analogowe */
+.pomiar{padding:7px 0;border-bottom:1px solid #212d39}
+.pomiar:last-child{border-bottom:none}
+.pom-gora{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.pom-et{font-size:12.5px;font-weight:500;min-width:0;overflow-wrap:anywhere}
+.pom-w{font-family:ui-monospace,monospace;font-size:13px;font-weight:700;flex:0 0 auto}
+.pom-bar{height:5px;background:#1d2733;border-radius:3px;margin-top:5px;overflow:hidden}
+.pom-fill{height:100%;border-radius:3px;transition:width .12s linear,background .2s}
+.pom-zakres{display:block;color:#5f7287;font-size:9.6px;font-family:ui-monospace,monospace;
+  margin-top:3px;letter-spacing:.2px}
+.pomiar{cursor:help}
 /* stopka — pasek odnośników, zdjęty z nagłówka */
 /* Stopka niesie CAŁY pasek: odnośniki, licznik cyklu, tempo, przyciski,
    repozytorium i język. Nagłówek to już tylko tytuł. */
@@ -1279,6 +1417,25 @@ footer .jezyk button{padding:4px 8px;font-size:10.5px}
   color:var(--amber);background:#2a2208;border:1px solid #5a4a12;border-radius:3px;
   padding:1px 5px;vertical-align:1px;visibility:hidden}
 .filtr.widac{visibility:visible}
+
+/* ---------------------------------------------------------------------
+   Zacieśnienia dla niskich okien. MUSZĄ stać na końcu arkusza: @media nie
+   podnosi specyficzności, więc reguła bazowa zapisana niżej w pliku
+   wygrywała z identyczną regułą w zapytaniu medialnym umieszczonym wyżej.
+   „Stan bieżący" niesie opis stanu i listę przejść z opisami — po polsku
+   to najdłuższa treść z dolnej trójki, więc ta karta nie mieści się pierwsza.
+   --------------------------------------------------------------------- */
+@media(min-width:1451px) and (max-height:1020px){
+  .stan-teraz{font-size:17px}
+  .stan-opis{font-size:11.8px;line-height:1.38}
+  .przej{font-size:11px;padding:5px 7px;margin-bottom:4px;line-height:1.34}
+  .przej small{line-height:1.3}
+}
+@media(min-width:1451px) and (max-height:940px){
+  .stan-teraz{font-size:15.5px}
+  .stan-opis{font-size:11.2px;line-height:1.33}
+  .przej{font-size:10.5px;padding:4px 6px;margin-bottom:3px;line-height:1.3}
+}
 </style>
 </head>
 <body>
@@ -1288,6 +1445,7 @@ footer .jezyk button{padding:4px 8px;font-size:10.5px}
 
 <main>
   <div class="lewa">
+  <div class="synoptyka" id="synoptyka"></div>
   <div class="diagram">
     <div class="warstwy">
       <button data-w="AGR" class="akt">AGR_</button><button data-w="GAZ">GAZ_</button>
@@ -1303,6 +1461,11 @@ footer .jezyk button{padding:4px 8px;font-size:10.5px}
         <div id="wyjscia"></div>
         <div id="liczniki" style="margin-top:10px"></div>
       </div>
+    </div>
+
+    <div class="karta">
+      <h2 data-i18n="card.meas">Measurements</h2>
+      <div class="tresc" id="pomiary"></div>
     </div>
 
     <div class="karta">
@@ -1404,7 +1567,8 @@ function ustawJezyk(l){
   document.querySelectorAll('.warstwy > button').forEach(b=>{
     b.title=T('layer.'+b.dataset.w.toLowerCase()+'.title');
   });
-  if(M){ naglowek(); rysujWejscia(); cacheWy=null; cacheLic=null;
+  if(M){ naglowek(); rysujWejscia(); cacheWy=null; cacheLic=null; cachePom=null;
+         const sy=document.getElementById('synoptyka'); if(sy) sy.innerHTML='';
          ostatniStan=null; ostatniSvg=''; panelStanu(); rysujDziennik(); odswiez(); }
 }
 
@@ -1534,6 +1698,7 @@ function resetuj(){
   cyklStart=null; cyklOstatni=null; cykle=0;
   czasZaskoku=null; czasZgaszenia=null;
   cacheWy=null; cacheLic=null; ostatniStan=null; ostatniSvg='';
+  resetPomiary(); cachePom=null;
   we={}; for(const k in (M.inputs||{})) we[k] = !!M.inputs[k].default;
   weF={}; holdT={}; filtrKrok(0);
   lic={}; for(const k in (M.counters||{})) lic[k]=M.counters[k];
@@ -1665,6 +1830,59 @@ function gotowe(p){
   }
   return true;
 }
+// =====================================================================
+//  MODEL WIELKOŚCI ANALOGOWYCH
+//
+//  Żadna z nich nie wchodzi do maszyny stanów — maszyna działa na stykach.
+//  Są tu, bo sama nazwa stanu nie mówi, czy instalacja jest zdrowa, a dwie
+//  z nich tłumaczą ograniczenia, które inaczej wyglądają na wzięte z sufitu:
+//  `u_gen` to wielkość, którą realnie mierzy przekaźnik nadzoru na IN-02,
+//  a `u_batt` to powód, dla którego liczba prób rozruchu jest budżetem.
+// =====================================================================
+let POM={}, pvFaza=0;
+function resetPomiary(){
+  POM={ u_gen:0, t_engine:18, u_batt:12.8, soc:46, p_pv:0 };
+  pvFaza=Math.random()*Math.PI*2;
+}
+function modelPomiarow(dt){
+  if(!M || !M.measurements) return;
+  const praca=!!we.running, kreci=!!wyjsciaStanu().starter;
+
+  // napięcie fazy: narasta po potwierdzeniu pracy, opada po zatrzymaniu,
+  // w biegu drobne tętnienie od regulacji AVR
+  const celU = praca ? 400 : 0;
+  POM.u_gen += (celU - POM.u_gen) * Math.min(1, dt*3.2);
+  if(praca) POM.u_gen += (Math.random()-0.5)*1.8;
+  if(POM.u_gen < 0.6) POM.u_gen = 0;
+
+  // temperatura silnika chłodzonego powietrzem
+  POM.t_engine += ((praca?86:18) - POM.t_engine) * dt * (praca?0.030:0.012);
+
+  // akumulator rozrusznika — zapada pod rozrusznikiem, między próbami
+  // wraca tylko częściowo, ładuje się dopiero przy pracującym silniku
+  if(kreci)      POM.u_batt -= dt*0.55;
+  else if(praca) POM.u_batt += (14.1 - POM.u_batt) * dt * 0.22;
+  else           POM.u_batt += (12.8 - POM.u_batt) * dt * 0.08;
+  POM.u_batt = Math.max(8.2, Math.min(14.4, POM.u_batt));
+
+  // bank: ładowany przy pracującym agregacie, poza tym schodzi od odbiorów
+  POM.soc = Math.max(0, Math.min(100, POM.soc + dt*(praca?0.55:-0.18)));
+
+  // PV — powolna zmienność, żeby pasmo nie stało martwe
+  pvFaza += dt*0.08;
+  POM.p_pv = Math.max(0, 2100 + Math.sin(pvFaza)*1500 + Math.sin(pvFaza*3.1)*260);
+}
+function stanPomiaru(k){           // 'ok' | 'warn' | 'alarm'
+  const m=(M.measurements||{})[k], v=POM[k];
+  if(!m) return 'ok';
+  if(m.alarm_above!==undefined && v>=m.alarm_above) return 'alarm';
+  if(m.alarm_below!==undefined && v<=m.alarm_below) return 'alarm';
+  if(m.warn_above!==undefined  && v>=m.warn_above)  return 'warn';
+  if(m.warn_below!==undefined  && v<=m.warn_below)  return 'warn';
+  if(m.ok_from!==undefined && m.ok_to!==undefined)
+    return (v>=m.ok_from && v<=m.ok_to) ? 'ok' : (v<=0.6 ? 'off' : 'warn');
+  return 'ok';
+}
 function modelSilnikaKrok(dt){
   if(!modelSilnika) return;
   const zezw = !!wyjsciaStanu().ignition;
@@ -1680,6 +1898,7 @@ function modelSilnikaKrok(dt){
 }
 function tik(dt){
   t+=dt; wStanie+=dt;
+  modelPomiarow(dt);
   modelSilnikaKrok(dt);
   logujZmianyWe();
   filtrKrok(dt);
@@ -1993,13 +2212,93 @@ function budujWyjscia(){
   for(const k in (M.outputs||{})){
     const o=M.outputs[k];
     const opis = TY('outputs.'+k+'.description', o.description||'');
+    // Opis w dymku — ta kolumna jest wąska, a treść zostaje w YAML-u.
+    // Wejścia mają opisy pod spodem, bo stoją na pełnej wysokości i mają miejsce.
     const d=document.createElement('div'); d.className='wiersz';
+    if(opis) d.title=podstaw(opis);
     d.innerHTML='<div class="etyk">'+(o.pin?'<span class="pin">'+esc(o.pin)+'</span> ':'')+
-      esc(etykPinu('outputs',k))+
-      (opis?'<small>'+esc(podstaw(opis))+linkUrzadzenia(o,'outputs.'+k)+'</small>':'')+'</div>'+
+      esc(etykPinu('outputs',k))+linkUrzadzenia(o,'outputs.'+k)+'</div>'+
       '<div class="lampka"></div>';
     c.appendChild(d); cacheWy[k]=d.querySelector('.lampka');
   }
+}
+let cachePom=null;
+function budujPomiary(){
+  const c=document.getElementById('pomiary'); c.innerHTML=''; cachePom={};
+  for(const k in (M.measurements||{})){
+    const m=M.measurements[k];
+    const opis=TY('measurements.'+k+'.description', m.description||'');
+    // Opis idzie w dymek, nie pod wiersz: panel ma być gęsty jak tablica
+    // przyrządów, a nie czytanką. Treść zostaje w YAML-u i na hover.
+    const d=document.createElement('div'); d.className='pomiar';
+    if(opis) d.title=opis;
+    d.innerHTML='<div class="pom-gora"><span class="pom-et">'+
+      esc(TY('measurements.'+k+'.label', m.label||k))+'</span>'+
+      '<span class="pom-w"></span></div>'+
+      '<div class="pom-bar"><div class="pom-fill"></div></div>'+
+      '<small class="pom-zakres"></small>';
+    c.appendChild(d);
+    const z=d.querySelector('.pom-zakres');
+    const prog = m.ok_from!==undefined ? (m.ok_from+'–'+m.ok_to+' '+(m.unit||''))
+               : m.warn_below!==undefined ? ('⚠ < '+m.warn_below+' '+(m.unit||''))
+               : m.warn_above!==undefined ? ('⚠ > '+m.warn_above+' '+(m.unit||''))
+               : (m.min+'–'+m.max+' '+(m.unit||''));
+    z.textContent=prog;
+    cachePom[k]={ w:d.querySelector('.pom-w'), f:d.querySelector('.pom-fill') };
+  }
+}
+function odswiezPomiary(){
+  if(!cachePom) budujPomiary();
+  const KOL={ ok:'#4fb477', warn:'#F7A800', alarm:'#e05c4b', off:'#4a5e74' };
+  for(const k in cachePom){
+    const m=M.measurements[k], v=POM[k]||0, st=stanPomiaru(k);
+    const dok = (m.max-m.min) > 200 ? 0 : 1;
+    cachePom[k].w.textContent = v.toFixed(dok)+' '+(m.unit||'');
+    cachePom[k].w.style.color = KOL[st];
+    const pr = Math.max(0, Math.min(100, (v-m.min)/(m.max-m.min)*100));
+    cachePom[k].f.style.width = pr+'%';
+    cachePom[k].f.style.background = KOL[st];
+  }
+}
+function odswiezSynoptyke(){
+  const c=document.getElementById('synoptyka'); if(!c) return;
+  const lista=M.synoptic||[];
+  if(c.childElementCount===0){
+    c.innerHTML = lista.map((b,i)=>
+      (i?'<span class="syn-strz">→</span>':'')+
+      '<div class="syn" data-b="'+b.id+'"><div class="syn-et"></div><div class="syn-w"></div></div>'
+    ).join('');
+  }
+  const praca=!!we.running, kreci=!!wyjsciaStanu().starter, zad=!!weF.gen_request;
+  const wOknie = POM.u_gen>=(M.measurements.u_gen.ok_from) && POM.u_gen<=(M.measurements.u_gen.ok_to);
+  const dane={
+    request:{ w: zad?'ON':'OFF',              kl: zad?'on':'off' },
+    engine: { w: praca?T('syn.running'):(kreci?T('syn.cranking'):T('syn.stopped')),
+              kl: praca?'on':(kreci?'warn':'off') },
+    phase:  { w: POM.u_gen.toFixed(0)+' V',   kl: wOknie?'on':(POM.u_gen>0.6?'alarm':'off') },
+    deye:   { w: wOknie?'ON':'OFF',           kl: wOknie?'on':'off' },
+    bank:   { w: POM.soc.toFixed(0)+' %',     kl: POM.soc<=25?'alarm':'on' },
+    load:   { w: praca?T('syn.fromGen'):T('syn.fromBank'), kl:'on' }
+  };
+  // Kolory ustawiane STYLEM INLINE, nie klasami. Przy klasach cztery z sześciu
+  // bloków nie łapały reguły `.syn.on` mimo poprawnie ustawionej klasy —
+  // kaskada, nie logika. Inline wygrywa zawsze i znika cała ta klasa problemów,
+  // dokładnie jak w paskach pomiarów, które od początku działały.
+  const STYLSYN={
+    on:    {ram:'#4fb477', tlo:'#16301f', op:'1'},
+    warn:  {ram:'#F7A800', tlo:'#2a2208', op:'1'},
+    alarm: {ram:'#e05c4b', tlo:'#2a1614', op:'1'},
+    off:   {ram:'#26333f', tlo:'#1a2430', op:'.45'}
+  };
+  c.querySelectorAll('.syn').forEach(el=>{
+    const id=el.dataset.b, d=dane[id]||{w:'--',kl:'off'};
+    el.querySelector('.syn-et').textContent=T('syn.'+id);
+    el.querySelector('.syn-w').textContent=d.w;
+    const st=STYLSYN[d.kl]||STYLSYN.off;
+    el.style.borderColor=st.ram;
+    el.style.background=st.tlo;
+    el.style.opacity=st.op;
+  });
 }
 function budujLiczniki(){
   const cl=document.getElementById('liczniki'); cl.innerHTML=''; cacheLic={};
@@ -2050,6 +2349,8 @@ function odswiez(){
   const wy=wyjsciaStanu();
   for(const k in cacheWy) cacheWy[k].classList.toggle('on', !!wy[k]);
 
+  odswiezPomiary();
+  odswiezSynoptyke();
   if(!cacheLic) budujLiczniki();
   for(const k in lic) if(cacheLic[k]) cacheLic[k].textContent=lic[k];
   cacheLic.__czas.textContent=wStanie.toFixed(1)+' s';

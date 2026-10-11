@@ -47,6 +47,81 @@ parameters:
 counters:
   attempts: 0
 
+# =====================================================================
+#  MEASUREMENTS — analogue quantities the simulator models and displays.
+#
+#  None of these is an input to the state machine. They exist because a state
+#  name alone does not tell you whether the plant is healthy, and because two
+#  of them explain limits that otherwise look arbitrary:
+#  `u_gen` is the quantity the IN-02 voltage relay actually watches, and
+#  `u_batt` is why cranking has an attempt budget at all.
+#
+#  `model` names the behaviour the simulator implements for each one.
+# =====================================================================
+measurements:
+  u_gen:
+    label: Genset phase voltage
+    unit: V
+    min: 0
+    max: 440
+    ok_from: 360
+    ok_to: 420
+    model: gen_voltage
+    description: >-
+      What the DIN-rail voltage monitoring relay on IN-02 measures. The relay
+      closes its contact inside the working window, and that contact is the
+      only proof the controller has that the engine is actually producing.
+  t_engine:
+    label: Engine temperature
+    unit: °C
+    min: 0
+    max: 120
+    warn_above: 95
+    alarm_above: 110
+    model: engine_temp
+    description: >-
+      Air-cooled GX390. Climbs under load, falls when stopped. Below 40 °C is
+      where a choke would be needed — which this controller does not yet have.
+  u_batt:
+    label: Starter battery
+    unit: V
+    min: 8
+    max: 15
+    warn_below: 10.5
+    alarm_below: 9.5
+    model: starter_battery
+    description: >-
+      Sags hard while the starter turns and only partly recovers between
+      attempts. THIS IS WHY THE ATTEMPT LIMIT EXISTS: three attempts is a
+      budget, not a formality. Watch it fall across a failed start cycle.
+  soc:
+    label: Bank SOC
+    unit: "%"
+    min: 0
+    max: 100
+    warn_below: 25
+    model: bank_soc
+    description: >-
+      Read from the Deye over Modbus, register 588. Falls on island load,
+      rises while the genset charges. Informational only — the state machine
+      acts on the G-start contact, not on SOC.
+  p_pv:
+    label: PV power
+    unit: W
+    min: 0
+    max: 4320
+    model: pv_power
+    description: 8 x JA Solar JAM72D30-540/MB, 4.32 kWp on the barn.
+
+# Energy chain shown in the synoptic bar, left to right.
+synoptic:
+  - { id: request, label: request }
+  - { id: engine,  label: engine }
+  - { id: phase,   label: phase }
+  - { id: deye,    label: Deye GEN }
+  - { id: bank,    label: bank }
+  - { id: load,    label: load }
+
 inputs:
   gen_request:
     pin: IN-01
