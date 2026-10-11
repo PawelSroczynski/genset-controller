@@ -1192,10 +1192,12 @@ const I18N = {
       'plant.deyeNote':   'Drives IN-01 from SOC with hysteresis: closes at Start, releases at Stop. Click IN-01 to take over by hand.',
       'plant.deyeOn':     '[plant] Deye model ON',
       'plant.deyeOff':    '[plant] Deye model OFF — IN-01 by hand',
+      'plant.bankClick':  'Click to drain the bank to one point above the Start threshold. A shortcut past the dozen hours of discharging, so the request itself can be watched.',
+      'plant.bankLog':    '[plant] bank set just above the Start threshold:',
       'plant.warp':       'plant',
       'plant.realtime':   'real time',
 
-      'syn.engine':       'engine',
+      'syn.engine':       'engine status',
       'syn.phase':        'phase',
       'syn.deye':         'Deye status',
       'syn.bank':         'bank',
@@ -1274,10 +1276,12 @@ const I18N = {
       'plant.deyeNote':   'Prowadzi IN-01 z SOC, z histerezą: zwiera na progu Start, zwalnia na Stop. Kliknij IN-01, żeby przejąć ręcznie.',
       'plant.deyeOn':     '[instalacja] model Deye ON',
       'plant.deyeOff':    '[instalacja] model Deye OFF — IN-01 ręcznie',
+      'plant.bankClick':  'Kliknij, żeby rozładować bank do progu Start +1 %. Skrót przez kilkanaście godzin rozładowania, żeby dało się obejrzeć samo wyzwolenie żądania.',
+      'plant.bankLog':    '[instalacja] bank ustawiony tuż nad progiem Start:',
       'plant.warp':       'instalacja',
       'plant.realtime':   'czas rzeczywisty',
 
-      'syn.engine':       'silnik',
+      'syn.engine':       'status silnika',
       'syn.phase':        'faza',
       'syn.deye':         'status Deye',
       'syn.bank':         'bank',
@@ -2676,6 +2680,21 @@ function odswiezSynoptyke(){
       (i?'<span class="syn-strz">→</span>':'')+
       '<div class="syn" data-b="'+b.id+'"><div class="syn-et"></div><div class="syn-w"></div></div>'
     ).join('');
+    // Skrót na kafelku banku: zjechanie z 62 % do progu to kilkanaście godzin
+    // instalacji. Jedno kliknięcie stawia SOC tuż nad progiem, żeby dało się
+    // obejrzeć samo wyzwolenie żądania bez czekania na całe rozładowanie.
+    const kb=c.querySelector('.syn[data-b="bank"]');
+    if(kb && PL){
+      kb.style.cursor='pointer';
+      kb.title=T('plant.bankClick');
+      kb.onclick=()=>{
+        INST.soc = PL.deye.gen_start_soc + 1;
+        POM.soc = INST.soc;
+        dopisz({typ:'txt', kl:'m',
+          txt: T('plant.bankLog')+' '+INST.soc.toFixed(0)+' %'});
+        odswiez();
+      };
+    }
   }
   const praca=!!we.running, kreci=!!wyjsciaStanu().starter, zad=!!we.gen_request;
   const mu=wszystkiePomiary().u_gen;
