@@ -47,8 +47,9 @@ inputs:
     pin: IN-02
     label: Run confirmed
     description: >-
-      Dry contact of an external voltage monitoring relay on the genset output
-      phase. ON = voltage within the working window, i.e. the genset produces.
+      Dry contact of a single-phase undervoltage relay on one output phase.
+      ON = that phase is above the threshold set on the relay, i.e. the genset
+      produces. The threshold lives in the relay, not here.
   co_alarm:
     pin: IN-03
     label: CO alarm
@@ -308,13 +309,14 @@ measurements:
     label: Genset phase voltage
     unit: V
     min: 0
-    max: 440
-    ok_from: 360
-    ok_to: 420
+    max: 276
+    ok_from: 180        # = Umin set on the relay; its contact closes above this
+    ok_to: 276          # = Umax at the top of its range, so no upper trip
     model: gen_voltage
     description: >-
-      What the voltage monitoring relay on IN-02 measures. Its contact is the
-      only proof the controller has that the engine is producing.
+      One output phase against neutral, which is what the undervoltage relay on
+      IN-02 measures. Its contact is the only proof the controller has that the
+      engine is producing, and the window here mirrors the relay's settings.
   t_engine:
     label: Engine temperature
     unit: °C
@@ -419,8 +421,8 @@ hold_counter: [kill]
 # External hardware a signal depends on, linked from the input panel.
 devices:
   running:
-    name: e.g. Relpol RPN-.VF-A400
-    url: https://www.relpol.pl/Produkty/Przekazniki-nadzorcze/Przekazniki-nadzorcze-modulowe/Przekazniki-nadzorcze-RPN-.VF-A400
+    name: Relpol RPN-1VM-A230
+    url: https://www.relpol.pl/Produkty/Przekazniki-nadzorcze/Przekazniki-nadzorcze-modulowe/Przekazniki-nadzorcze-RPN-.VM-A230-NOWOSC
 </script>
 <script id="i18n">
 // =====================================================================
@@ -608,8 +610,8 @@ const I18N = {
         'Styk bezpotencjałowy G-start, zaciski 1 i 2 falownika. ON = żądanie pracy.',
       'inputs.running.label': 'Praca potwierdzona',
       'inputs.running.description':
-        'Styk bezpotencjałowy zewnętrznego przekaźnika nadzoru napięcia na fazie wyjścia agregatu. ON = napięcie w oknie roboczym, czyli agregat produkuje.',
-      'inputs.running.device.name': 'np. Relpol RPN-.VF-A400',
+        'Styk bezpotencjałowy przekaźnika podnapięciowego jednofazowego na jednej fazie wyjścia. ON = ta faza jest powyżej progu nastawionego na przekaźniku, czyli agregat produkuje. Próg siedzi w przekaźniku, nie tutaj.',
+      'inputs.running.device.name': 'Relpol RPN-1VM-A230',
       'inputs.co_alarm.label': 'Alarm CO',
       'inputs.co_alarm.description':
         'Styk alarmowy czujnika tlenku węgla. ON = wykryty tlenek węgla.',
@@ -643,7 +645,7 @@ const I18N = {
       'measurements.gen_load.description': 'Ile z mocy agregatu jest realnie wykorzystane. Deye ogranicza ładowanie nastawą gen_charge_a, więc przy samych odbiorach bazowych agregat jedzie mocno poniżej pełnego obciążenia — czego gazogenerator nie znosi.',
       'measurements.u_gen.label': 'Napięcie fazy agregatu',
       'measurements.u_gen.description':
-        'To mierzy przekaźnik nadzoru napięcia na IN-02. Jego styk jest jedynym dowodem, jaki sterownik ma na to, że silnik produkuje.',
+        'Jedna faza wyjścia względem zera — tyle mierzy przekaźnik podnapięciowy na IN-02. Jego styk jest jedynym dowodem, jaki sterownik ma na to, że silnik produkuje, a okno tutaj odwzorowuje nastawy przekaźnika.',
       'measurements.t_engine.label': 'Temperatura silnika',
       'measurements.t_engine.description':
         'GX390 chłodzony powietrzem. Poniżej 40 °C potrzebne byłoby ssanie — którego ten sterownik jeszcze nie ma.',
@@ -1677,14 +1679,18 @@ function modelInstalacji(dtSter){
   }
 }
 function modelPomiarow(dt){
-  if(!M || !M.measurements) return;
+  // Straż tylko na wczytanej maszynie. NIE na `M.measurements` — pomiary
+  // siedzą w plant.yaml od czyszczenia 11.10, a stary warunek wyłączył
+  // po cichu cały model: wskaźniki się rysowały i stały na zerze.
+  if(!M) return;
   const praca=!!we.running, kreci=!!wyjsciaStanu().starter;
 
-  // napięcie fazy: narasta po potwierdzeniu pracy, opada po zatrzymaniu,
-  // w biegu drobne tętnienie od regulacji AVR
-  const celU = praca ? 400 : 0;
+  // Napięcie JEDNEJ FAZY DO ZERA — tyle mierzy przekaźnik podnapięciowy
+  // na IN-02, a nie napięcie międzyfazowe. Narasta po potwierdzeniu pracy,
+  // opada po zatrzymaniu, w biegu drobne tętnienie od regulacji AVR.
+  const celU = praca ? 230 : 0;
   POM.u_gen += (celU - POM.u_gen) * Math.min(1, dt*3.2);
-  if(praca) POM.u_gen += (Math.random()-0.5)*1.8;
+  if(praca) POM.u_gen += (Math.random()-0.5)*1.1;
   if(POM.u_gen < 0.6) POM.u_gen = 0;
 
   // temperatura silnika chłodzonego powietrzem

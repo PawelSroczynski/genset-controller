@@ -117,13 +117,14 @@ measurements:
     label: Genset phase voltage
     unit: V
     min: 0
-    max: 440
-    ok_from: 360
-    ok_to: 420
+    max: 276
+    ok_from: 180        # = Umin set on the relay; its contact closes above this
+    ok_to: 276          # = Umax at the top of its range, so no upper trip
     model: gen_voltage
     description: >-
-      What the voltage monitoring relay on IN-02 measures. Its contact is the
-      only proof the controller has that the engine is producing.
+      One output phase against neutral, which is what the undervoltage relay on
+      IN-02 measures. Its contact is the only proof the controller has that the
+      engine is producing, and the window here mirrors the relay's settings.
   t_engine:
     label: Engine temperature
     unit: °C
@@ -228,5 +229,5 @@ hold_counter: [kill]
 # External hardware a signal depends on, linked from the input panel.
 devices:
   running:
-    name: e.g. Relpol RPN-.VF-A400
-    url: https://www.relpol.pl/Produkty/Przekazniki-nadzorcze/Przekazniki-nadzorcze-modulowe/Przekazniki-nadzorcze-RPN-.VF-A400
+    name: Relpol RPN-1VM-A230
+    url: https://www.relpol.pl/Produkty/Przekazniki-nadzorcze/Przekazniki-nadzorcze-modulowe/Przekazniki-nadzorcze-RPN-.VM-A230-NOWOSC

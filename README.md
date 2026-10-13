@@ -301,11 +301,39 @@ contactor coil.
 
 | function | device | note |
 |---|---|---|
-| run confirmation (IN-02) | DIN-rail voltage monitoring relay, e.g. [Relpol RPN-.VF-A400](https://www.relpol.pl/Produkty/Przekazniki-nadzorcze/Przekazniki-nadzorcze-modulowe/Przekazniki-nadzorcze-RPN-.VF-A400) | volt-free contact on the generator phase |
+| run confirmation (IN-02) | single-phase undervoltage relay, [Relpol RPN-1VM-A230](https://www.relpol.pl/Produkty/Przekazniki-nadzorcze/Przekazniki-nadzorcze-modulowe/Przekazniki-nadzorcze-RPN-.VM-A230-NOWOSC) | volt-free contact, one phase against neutral. Umax to the top of its range, Umin is the threshold that means "producing" |
 | permit chain | DIN relay with a **changeover** contact | its NC sits in the kill line |
 | starter limit | **one-shot** timer relay, 3–4 s | will not re-trigger without the input dropping |
 | starter | contactor | the controller cannot feed the starter directly |
 | CO | detector with **two** contacts | one to IN-03, one into the hardwired chain |
+
+### Why that relay and not a three-phase one
+
+The question IN-02 has to answer is "is the genset producing", which is one
+threshold on one phase. The obvious-looking part, a three-phase monitoring
+relay such as the RPN-.VF-A400, answers a different question — is a phase
+missing, is the asymmetry too large — at **fixed** thresholds of 175 V and
+55 V, with a **fixed 4 s** switch-off delay and nothing to adjust.
+
+That delay was the disqualifier. Run confirmation would arrive 4 s plus the
+input filter after the voltage actually collapsed, and `GENS_STOPPING` cannot
+leave until the confirmation is gone, so the kill short would be held about 5 s
+against a `t_kill` of 3 and `t_rundown` of 10 — the spec and the behaviour
+pulled apart.
+
+The `RPN-1VM-A230` is single-function and single-phase: Umin set anywhere from
+30 to 95 % of Umax, Umax from 160 to 276 V, switch-off delay stepped from 0.1 s
+to 9 s, hysteresis ±6 % of the reading. It also drops the contact **with no
+delay at all** below 0.6 Un, which is exactly the collapsing-genset case, while
+the settable delay covers a sag that should not cause panic. Three LEDs show
+supply, error-and-countdown and output state.
+
+> **Minimum switching load, 1 W / 10 mA.** Both datasheets state it, and a
+> volt-free contact read through a logic pull-up carries far less than that.
+> Measure the input current before trusting the contact; below 10 mA the
+> answer is an external pull-up that raises it, or a relay with gold-plated
+> contacts. The failure mode otherwise is intermittent run confirmation after
+> months of service, which is the worst kind to diagnose.
 
 ## Controller board
 

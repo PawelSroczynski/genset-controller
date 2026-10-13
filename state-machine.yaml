@@ -38,8 +38,9 @@ inputs:
     pin: IN-02
     label: Run confirmed
     description: >-
-      Dry contact of an external voltage monitoring relay on the genset output
-      phase. ON = voltage within the working window, i.e. the genset produces.
+      Dry contact of a single-phase undervoltage relay on one output phase.
+      ON = that phase is above the threshold set on the relay, i.e. the genset
+      produces. The threshold lives in the relay, not here.
   co_alarm:
     pin: IN-03
     label: CO alarm
